@@ -1,13 +1,9 @@
 import os
-import streamlit as st
 
-def get_secret(key: str, default: str | None = None):
-    # Prefer env vars (Railway), fall back to Streamlit secrets.toml
-    return os.getenv(key) or st.secrets.get(key, default)
+expected_password = os.getenv("PASSWORD") or st.secrets.get("PASSWORD")
+supabase_url = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
 
-import streamlit as st
-from supabase import create_client
-import pandas as pd
 
 # Page config
 st.set_page_config(

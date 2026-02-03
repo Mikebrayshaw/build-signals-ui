@@ -1,3 +1,10 @@
+import os
+import streamlit as st
+
+def get_secret(key: str, default: str | None = None):
+    # Prefer env vars (Railway), fall back to Streamlit secrets.toml
+    return os.getenv(key) or st.secrets.get(key, default)
+
 import streamlit as st
 from supabase import create_client
 import pandas as pd
@@ -127,19 +134,28 @@ def check_password():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
 
+    # Read PASSWORD from Railway env var first, fallback to Streamlit secrets
+    expected_password = os.getenv("PASSWORD") or st.secrets.get("PASSWORD")
+
+    if not expected_password:
+        st.error("Missing PASSWORD. Set it in Railway Variables.")
+        st.stop()
+
     if not st.session_state.authenticated:
-        st.markdown("## 📡 Build Signals")
+        st.markdown("## 🏗️ Build Signals")
         st.markdown("Enter password to access the dashboard.")
 
         password = st.text_input("Password", type="password")
         if st.button("Login"):
-            if password == st.secrets["PASSWORD"]:
+            if password == expected_password:
                 st.session_state.authenticated = True
                 st.rerun()
             else:
                 st.error("Incorrect password")
         return False
+
     return True
+
 
 
 @st.cache_resource

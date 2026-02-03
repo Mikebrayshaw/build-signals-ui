@@ -157,9 +157,11 @@ def check_password():
 @st.cache_resource
 def init_supabase():
     """Initialize Supabase client."""
+    supabase_url = st.secrets.get("SUPABASE_URL")
+    supabase_key = st.secrets.get("SUPABASE_KEY")
     return create_client(
-        st.secrets["SUPABASE_URL"],
-        st.secrets["SUPABASE_KEY"]
+        supabase_url,
+        supabase_key
     )
 
 

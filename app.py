@@ -1,6 +1,4 @@
 import os
-supabase_url = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
 
 
 # Page config

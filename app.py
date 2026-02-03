@@ -155,10 +155,14 @@ def check_password():
 @st.cache_resource
 def init_supabase():
     """Initialize Supabase client."""
-    return create_client(
-        st.secrets["SUPABASE_URL"],
-        st.secrets["SUPABASE_KEY"]
-    )
+    supabase_url = os.getenv("SUPABASE_URL") or st.secrets.get("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY") or st.secrets.get("SUPABASE_KEY")
+
+    if not supabase_url or not supabase_key:
+        st.error("Missing SUPABASE_URL or SUPABASE_KEY. Set them in Railway Variables.")
+        st.stop()
+
+    return create_client(supabase_url, supabase_key)
 
 
 def fetch_opportunities(supabase):

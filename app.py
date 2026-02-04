@@ -153,10 +153,16 @@ def check_password():
 @st.cache_resource
 def init_supabase():
     """Initialize Supabase client."""
-    supabase_url_secret = st.secrets.get("SUPABASE_URL")
-    supabase_key_secret = st.secrets.get("SUPABASE_KEY")
-    supabase_url = os.getenv("SUPABASE_URL") or supabase_url_secret
-    supabase_key = os.getenv("SUPABASE_KEY") or supabase_key_secret
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY")
+
+    # Fall back to st.secrets only if env vars aren't set
+    if not supabase_url or not supabase_key:
+        try:
+            supabase_url = supabase_url or st.secrets.get("SUPABASE_URL")
+            supabase_key = supabase_key or st.secrets.get("SUPABASE_KEY")
+        except Exception:
+            pass
 
     if not supabase_url or not supabase_key:
         st.error("Missing SUPABASE_URL or SUPABASE_KEY. Set them in Railway Variables.")

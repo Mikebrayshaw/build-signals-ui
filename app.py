@@ -1,5 +1,7 @@
 import os
-import streamlit as st 
+import streamlit as st
+from supabase import create_client
+
 
 # Page config
 st.set_page_config(
@@ -153,14 +155,20 @@ def check_password():
 @st.cache_resource
 def init_supabase():
     """Initialize Supabase client."""
+    # Check env vars first (Railway)
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_KEY")
 
     # Fall back to st.secrets only if env vars aren't set
-    if not supabase_url or not supabase_key:
+    if not supabase_url:
         try:
-            supabase_url = supabase_url or st.secrets.get("SUPABASE_URL")
-            supabase_key = supabase_key or st.secrets.get("SUPABASE_KEY")
+            supabase_url = st.secrets["SUPABASE_URL"]
+        except Exception:
+            pass
+
+    if not supabase_key:
+        try:
+            supabase_key = st.secrets["SUPABASE_KEY"]
         except Exception:
             pass
 

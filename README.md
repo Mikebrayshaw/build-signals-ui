@@ -21,9 +21,9 @@ cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 Edit `.streamlit/secrets.toml` with your actual values:
 
 ```toml
-SUPABASE_URL = "https://njwvtksauogsmberxrbd.supabase.co"
+SUPABASE_URL = "https://your-project-id.supabase.co"
 SUPABASE_KEY = "your-supabase-anon-key"
-PASSWORD = "buildsignals99"
+PASSWORD = "your-secure-password-here"
 ```
 
 ### 3. Run the app

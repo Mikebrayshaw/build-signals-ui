@@ -1,6 +1,20 @@
 import os
+import logging
 import streamlit as st
 from supabase import create_client
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Configuration constants
+MAX_KEYWORDS_DISPLAY = 8
+MAX_REPOS_DISPLAY = 5
+DEFAULT_PAGE_SIZE = 50
+CACHE_TTL_SECONDS = 300  # 5 minutes
 
 
 # Page config
@@ -142,9 +156,11 @@ def check_password():
         password = st.text_input("Password", type="password")
         if st.button("Login"):
             if password == expected_password:
+                logger.info("Successful login attempt")
                 st.session_state.authenticated = True
                 st.rerun()
             else:
+                logger.warning("Failed login attempt")
                 st.error("Incorrect password")
         return False
 
@@ -163,26 +179,45 @@ def init_supabase():
     if not supabase_url:
         try:
             supabase_url = st.secrets["SUPABASE_URL"]
-        except Exception:
-            pass
+        except KeyError:
+            st.error("⚠️ Configuration Error: SUPABASE_URL not found in environment or secrets")
+            st.stop()
+        except Exception as e:
+            st.error(f"⚠️ Error reading SUPABASE_URL from secrets: {str(e)}")
+            st.stop()
 
     if not supabase_key:
         try:
             supabase_key = st.secrets["SUPABASE_KEY"]
-        except Exception:
-            pass
+        except KeyError:
+            st.error("⚠️ Configuration Error: SUPABASE_KEY not found in environment or secrets")
+            st.stop()
+        except Exception as e:
+            st.error(f"⚠️ Error reading SUPABASE_KEY from secrets: {str(e)}")
+            st.stop()
 
     if not supabase_url or not supabase_key:
         st.error("Missing SUPABASE_URL or SUPABASE_KEY. Set them in Railway Variables.")
         st.stop()
 
+    logger.info(f"Initializing Supabase connection to {supabase_url[:30]}...")
     return create_client(supabase_url, supabase_key)
 
 
-def fetch_opportunities(supabase):
-    """Fetch all opportunities from Supabase."""
-    response = supabase.table("opportunities").select("*").execute()
-    return response.data
+def fetch_opportunities(supabase, limit=None, offset=0):
+    """Fetch opportunities from Supabase with optional pagination."""
+    try:
+        query = supabase.table("opportunities").select("*", count="exact")
+        
+        if limit:
+            query = query.range(offset, offset + limit - 1)
+        
+        response = query.execute()
+        logger.info(f"Fetched {len(response.data)} opportunities from database")
+        return response.data, getattr(response, 'count', len(response.data))
+    except Exception as e:
+        st.error(f"⚠️ Database Error: Failed to fetch opportunities - {str(e)}")
+        return [], 0
 
 
 def render_opportunity(opp):
@@ -229,14 +264,14 @@ def render_opportunity(opp):
     # Keywords
     if keywords:
         html += '<div style="margin-bottom: 8px;">'
-        for kw in keywords[:8]:  # Limit to 8 keywords
+        for kw in keywords[:MAX_KEYWORDS_DISPLAY]:  # Limit to MAX_KEYWORDS_DISPLAY
             html += f'<span class="keyword-tag">{kw}</span>'
         html += '</div>'
 
     # GitHub repos
     if github_repos:
         html += '<div style="margin-top: 12px;">'
-        for repo in github_repos[:5]:  # Limit to 5 repos
+        for repo in github_repos[:MAX_REPOS_DISPLAY]:  # Limit to MAX_REPOS_DISPLAY
             if isinstance(repo, dict):
                 repo_name = repo.get("name", repo.get("full_name", "Unknown"))
                 repo_url = repo.get("url", repo.get("html_url", "#"))
@@ -273,7 +308,7 @@ def main():
 
     # Fetch data
     with st.spinner("Loading opportunities..."):
-        opportunities = fetch_opportunities(supabase)
+        opportunities, total_count = fetch_opportunities(supabase)
 
     if not opportunities:
         st.warning("No opportunities found in the database.")
@@ -306,6 +341,10 @@ def main():
     sort_choice = st.sidebar.selectbox("Sort By", list(sort_options.keys()))
     sort_field, sort_desc = sort_options[sort_choice]
 
+    # Pagination settings
+    st.sidebar.markdown("## Pagination")
+    page_size = st.sidebar.selectbox("Items per page", [25, 50, 100], index=1)
+
     # Apply filters
     filtered = opportunities
 
@@ -332,6 +371,9 @@ def main():
         reverse=sort_desc
     )
 
+    # Log filter results
+    logger.info(f"Filtered to {len(filtered)} opportunities (from {len(opportunities)} total)")
+
     # Stats
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -345,9 +387,29 @@ def main():
 
     st.markdown("---")
 
-    # Display opportunities
-    if filtered:
-        for opp in filtered:
+    # Calculate pagination
+    total_filtered = len(filtered)
+    total_pages = (total_filtered + page_size - 1) // page_size
+
+    # Page selector
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        page = st.number_input(
+            "Page", 
+            min_value=1, 
+            max_value=max(1, total_pages), 
+            value=1,
+            help=f"Total pages: {total_pages}"
+        )
+
+    # Slice filtered results for current page
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    page_opportunities = filtered[start_idx:end_idx]
+
+    # Display paginated opportunities
+    if page_opportunities:
+        for opp in page_opportunities:
             render_opportunity(opp)
     else:
         st.info("No opportunities match your filters.")
@@ -355,7 +417,7 @@ def main():
     # Footer
     st.sidebar.markdown("---")
     st.sidebar.markdown(
-        f"*Showing {len(filtered)} of {len(opportunities)} opportunities*"
+        f"*Showing {len(page_opportunities)} of {len(filtered)} opportunities (Page {page}/{total_pages})*"
     )
 
 

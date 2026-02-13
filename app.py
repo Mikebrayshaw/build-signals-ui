@@ -1,5 +1,7 @@
 import os
 import logging
+import html
+from urllib.parse import urlparse
 import streamlit as st
 from supabase import create_client
 
@@ -220,6 +222,36 @@ def fetch_opportunities(supabase, limit=None, offset=0):
         return [], 0
 
 
+def safe_text(value):
+    """Escape text for safe HTML rendering."""
+    return html.escape(str(value) if value is not None else "")
+
+
+def is_valid_url(url):
+    """Validate URL for rendering clickable links."""
+    if not url:
+        return False
+
+    parsed = urlparse(str(url))
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def render_safe_link(url, label, css_class="", style="", allow_html_label=False):
+    """Render either a safe anchor tag or plain text when URL is invalid."""
+    safe_label = label if allow_html_label else safe_text(label)
+    safe_class = safe_text(css_class)
+    safe_style = safe_text(style)
+
+    if is_valid_url(url):
+        safe_url = safe_text(url)
+        return (
+            f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
+            f'class="{safe_class}" style="{safe_style}">{safe_label}</a>'
+        )
+
+    return f'<span class="{safe_class}" style="{safe_style}">{safe_label}</span>'
+
+
 def render_opportunity(opp):
     """Render a single opportunity card."""
     # Determine source type and styling
@@ -234,6 +266,8 @@ def render_opportunity(opp):
     # Get data
     score = opp.get("score", 0)
     comments = opp.get("comments", 0)
+    safe_score = safe_text(score)
+    safe_comments = safe_text(comments)
     keywords = opp.get("keywords", []) or []
     github_repos = opp.get("github_repos", []) or []
     created_at = opp.get("created_at", "")
@@ -246,18 +280,26 @@ def render_opportunity(opp):
         except:
             date_str = ""
 
+    title_link = render_safe_link(
+        hn_url,
+        title,
+        style="font-size: 16px; font-weight: 500; text-decoration: none;"
+    )
+    source_badge = (
+        f'<span class="source-tag {safe_text(source_class)}">{safe_text(source_label)}</span>'
+        if source_label else ''
+    )
+
     html = f"""
     <div class="opportunity-card">
         <div style="margin-bottom: 8px;">
-            <a href="{hn_url}" target="_blank" style="font-size: 16px; font-weight: 500; text-decoration: none;">
-                {title}
-            </a>
-            {f'<span class="source-tag {source_class}">{source_label}</span>' if source_label else ''}
+            {title_link}
+            {source_badge}
         </div>
         <div style="margin-bottom: 8px;">
-            <span class="score-badge">▲ {score}</span>
-            <span class="comments-badge">💬 {comments}</span>
-            <span style="color: #666; margin-left: 12px; font-size: 13px;">{date_str}</span>
+            <span class="score-badge">▲ {safe_score}</span>
+            <span class="comments-badge">💬 {safe_comments}</span>
+            <span style="color: #666; margin-left: 12px; font-size: 13px;">{safe_text(date_str)}</span>
         </div>
     """
 
@@ -265,7 +307,7 @@ def render_opportunity(opp):
     if keywords:
         html += '<div style="margin-bottom: 8px;">'
         for kw in keywords[:MAX_KEYWORDS_DISPLAY]:  # Limit to MAX_KEYWORDS_DISPLAY
-            html += f'<span class="keyword-tag">{kw}</span>'
+            html += f'<span class="keyword-tag">{safe_text(kw)}</span>'
         html += '</div>'
 
     # GitHub repos
@@ -281,13 +323,26 @@ def render_opportunity(opp):
                 repo_url = f"https://github.com/{repo}"
                 stars = 0
 
-            html += f'''
-            <a href="{repo_url}" target="_blank" class="repo-link" style="text-decoration: none;">
-                <span style="color: #888;">📦</span>
-                <span style="color: #22C55E;">{repo_name}</span>
-                {f'<span style="color: #666; margin-left: 8px;">⭐ {stars:,}</span>' if stars else ''}
-            </a>
-            '''
+            stars_badge = ""
+            if stars:
+                try:
+                    stars_badge = f'<span style="color: #666; margin-left: 8px;">⭐ {int(stars):,}</span>'
+                except (TypeError, ValueError):
+                    stars_badge = f'<span style="color: #666; margin-left: 8px;">⭐ {safe_text(stars)}</span>'
+
+            repo_label = (
+                '<span style="color: #888;">📦</span>'
+                f'<span style="color: #22C55E;">{safe_text(repo_name)}</span>'
+                f'{stars_badge}'
+            )
+
+            html += render_safe_link(
+                repo_url,
+                repo_label,
+                css_class="repo-link",
+                style="text-decoration: none;",
+                allow_html_label=True
+            )
         html += '</div>'
 
     html += '</div>'

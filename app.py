@@ -1,5 +1,7 @@
 import os
 import logging
+import html
+from urllib.parse import urlparse
 import streamlit as st
 from supabase import create_client
 
@@ -138,31 +140,84 @@ st.markdown("""
 
 
 def check_password():
-    """Simple password protection."""
+    """Identity-based authentication using Supabase Auth."""
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+    if "auth_user" not in st.session_state:
+        st.session_state.auth_user = None
+    if "auth_session" not in st.session_state:
+        st.session_state.auth_session = None
 
-    # Read PASSWORD from Railway env var first, fallback to Streamlit secrets
-    expected_password = os.getenv("PASSWORD") or st.secrets.get("PASSWORD")
+    supabase = init_supabase()
 
-    if not expected_password:
-        st.error("Missing PASSWORD. Set it in Railway Variables.")
-        st.stop()
+    # Restore existing session after rerun/reload
+    if st.session_state.auth_session and not st.session_state.auth_user:
+        try:
+            session_data = st.session_state.auth_session
+            supabase.auth.set_session(
+                session_data["access_token"],
+                session_data["refresh_token"],
+            )
+            user_response = supabase.auth.get_user()
+            st.session_state.auth_user = user_response.user
+            st.session_state.authenticated = user_response.user is not None
+        except Exception as e:
+            logger.warning(f"Failed to restore auth session: {e}")
+            st.session_state.authenticated = False
+            st.session_state.auth_user = None
+            st.session_state.auth_session = None
 
-    if not st.session_state.authenticated:
+    allowed_roles = os.getenv("AUTH_ALLOWED_ROLES") or st.secrets.get("AUTH_ALLOWED_ROLES", "")
+    allowed_roles = {role.strip() for role in allowed_roles.split(",") if role.strip()}
+
+    # Render login form when no active user is present
+    if not st.session_state.authenticated or not st.session_state.auth_user:
         st.markdown("## 🏗️ Build Signals")
-        st.markdown("Enter password to access the dashboard.")
+        st.markdown("Sign in with your account to access the dashboard.")
 
-        password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if password == expected_password:
-                logger.info("Successful login attempt")
+        with st.form("login_form"):
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in")
+
+        if submitted:
+            try:
+                auth_response = supabase.auth.sign_in_with_password(
+                    {"email": email, "password": password}
+                )
+                user = auth_response.user
+
+                if not user:
+                    st.error("Unable to sign in. Check your credentials.")
+                    return False
+
+                user_role = (user.app_metadata or {}).get("role")
+                if allowed_roles and user_role not in allowed_roles:
+                    supabase.auth.sign_out()
+                    logger.warning(f"Rejected login for {user.email}; missing required role")
+                    st.error("Your account is authenticated but not authorized for this app.")
+                    return False
+
+                st.session_state.auth_user = user
                 st.session_state.authenticated = True
+                st.session_state.auth_session = {
+                    "access_token": auth_response.session.access_token,
+                    "refresh_token": auth_response.session.refresh_token,
+                }
+                logger.info(f"Successful login attempt for {user.email}")
                 st.rerun()
-            else:
-                logger.warning("Failed login attempt")
-                st.error("Incorrect password")
+            except Exception as e:
+                logger.warning(f"Failed login attempt: {e}")
+                st.error("Incorrect email/password or account unavailable.")
+
         return False
+
+    # Authorization gate for role-based access (optional)
+    if allowed_roles:
+        user_role = (st.session_state.auth_user.app_metadata or {}).get("role")
+        if user_role not in allowed_roles:
+            st.error("You are authenticated but not authorized for this dashboard.")
+            return False
 
     return True
 
@@ -248,6 +303,36 @@ def fetch_opportunities(
         return [], 0, "We couldn't load opportunities right now. Please try again shortly."
 
 
+def safe_text(value):
+    """Escape text for safe HTML rendering."""
+    return html.escape(str(value) if value is not None else "")
+
+
+def is_valid_url(url):
+    """Validate URL for rendering clickable links."""
+    if not url:
+        return False
+
+    parsed = urlparse(str(url))
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def render_safe_link(url, label, css_class="", style="", allow_html_label=False):
+    """Render either a safe anchor tag or plain text when URL is invalid."""
+    safe_label = label if allow_html_label else safe_text(label)
+    safe_class = safe_text(css_class)
+    safe_style = safe_text(style)
+
+    if is_valid_url(url):
+        safe_url = safe_text(url)
+        return (
+            f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
+            f'class="{safe_class}" style="{safe_style}">{safe_label}</a>'
+        )
+
+    return f'<span class="{safe_class}" style="{safe_style}">{safe_label}</span>'
+
+
 def render_opportunity(opp):
     """Render a single opportunity card."""
     # Determine source type and styling
@@ -262,6 +347,8 @@ def render_opportunity(opp):
     # Get data
     score = opp.get("score", 0)
     comments = opp.get("comments", 0)
+    safe_score = safe_text(score)
+    safe_comments = safe_text(comments)
     keywords = opp.get("keywords", []) or []
     github_repos = opp.get("github_repos", []) or []
     created_at = opp.get("created_at", "")
@@ -274,18 +361,26 @@ def render_opportunity(opp):
         except:
             date_str = ""
 
+    title_link = render_safe_link(
+        hn_url,
+        title,
+        style="font-size: 16px; font-weight: 500; text-decoration: none;"
+    )
+    source_badge = (
+        f'<span class="source-tag {safe_text(source_class)}">{safe_text(source_label)}</span>'
+        if source_label else ''
+    )
+
     html = f"""
     <div class="opportunity-card">
         <div style="margin-bottom: 8px;">
-            <a href="{hn_url}" target="_blank" style="font-size: 16px; font-weight: 500; text-decoration: none;">
-                {title}
-            </a>
-            {f'<span class="source-tag {source_class}">{source_label}</span>' if source_label else ''}
+            {title_link}
+            {source_badge}
         </div>
         <div style="margin-bottom: 8px;">
-            <span class="score-badge">▲ {score}</span>
-            <span class="comments-badge">💬 {comments}</span>
-            <span style="color: #666; margin-left: 12px; font-size: 13px;">{date_str}</span>
+            <span class="score-badge">▲ {safe_score}</span>
+            <span class="comments-badge">💬 {safe_comments}</span>
+            <span style="color: #666; margin-left: 12px; font-size: 13px;">{safe_text(date_str)}</span>
         </div>
     """
 
@@ -293,7 +388,7 @@ def render_opportunity(opp):
     if keywords:
         html += '<div style="margin-bottom: 8px;">'
         for kw in keywords[:MAX_KEYWORDS_DISPLAY]:  # Limit to MAX_KEYWORDS_DISPLAY
-            html += f'<span class="keyword-tag">{kw}</span>'
+            html += f'<span class="keyword-tag">{safe_text(kw)}</span>'
         html += '</div>'
 
     # GitHub repos
@@ -309,13 +404,26 @@ def render_opportunity(opp):
                 repo_url = f"https://github.com/{repo}"
                 stars = 0
 
-            html += f'''
-            <a href="{repo_url}" target="_blank" class="repo-link" style="text-decoration: none;">
-                <span style="color: #888;">📦</span>
-                <span style="color: #22C55E;">{repo_name}</span>
-                {f'<span style="color: #666; margin-left: 8px;">⭐ {stars:,}</span>' if stars else ''}
-            </a>
-            '''
+            stars_badge = ""
+            if stars:
+                try:
+                    stars_badge = f'<span style="color: #666; margin-left: 8px;">⭐ {int(stars):,}</span>'
+                except (TypeError, ValueError):
+                    stars_badge = f'<span style="color: #666; margin-left: 8px;">⭐ {safe_text(stars)}</span>'
+
+            repo_label = (
+                '<span style="color: #888;">📦</span>'
+                f'<span style="color: #22C55E;">{safe_text(repo_name)}</span>'
+                f'{stars_badge}'
+            )
+
+            html += render_safe_link(
+                repo_url,
+                repo_label,
+                css_class="repo-link",
+                style="text-decoration: none;",
+                allow_html_label=True
+            )
         html += '</div>'
 
     html += '</div>'
@@ -333,6 +441,19 @@ def main():
     # Header
     st.markdown("# 📡 Build Signals")
     st.markdown("*Discover opportunities from Hacker News discussions*")
+
+    auth_user = st.session_state.get("auth_user")
+    if auth_user:
+        user_role = (auth_user.app_metadata or {}).get("role", "user")
+        st.caption(f"Signed in as **{auth_user.email}** ({user_role})")
+
+    # Fetch data
+    with st.spinner("Loading opportunities..."):
+        opportunities, total_count = fetch_opportunities(supabase)
+
+    if not opportunities:
+        st.warning("No opportunities found in the database.")
+        return
 
     # Sidebar filters
     st.sidebar.markdown("## Filters")
@@ -437,6 +558,17 @@ def main():
         st.info("No opportunities match your filters.")
 
     # Footer
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Logout"):
+        try:
+            supabase.auth.sign_out()
+        except Exception as e:
+            logger.warning(f"Error while signing out: {e}")
+        st.session_state.authenticated = False
+        st.session_state.auth_user = None
+        st.session_state.auth_session = None
+        st.rerun()
+
     st.sidebar.markdown("---")
     st.sidebar.markdown(
         f"*Showing {len(page_opportunities)} of {total_count} opportunities (Page {page}/{total_pages})*"

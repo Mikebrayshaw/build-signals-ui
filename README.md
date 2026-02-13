@@ -1,6 +1,6 @@
 # Build Signals UI
 
-A Streamlit dashboard for viewing Build Signals opportunities from Hacker News.
+A Streamlit dashboard for viewing Build Signals opportunities from Hacker News with Supabase-backed identity authentication.
 
 ## Setup
 
@@ -23,7 +23,8 @@ Edit `.streamlit/secrets.toml` with your actual values:
 ```toml
 SUPABASE_URL = "https://your-project-id.supabase.co"
 SUPABASE_KEY = "your-supabase-anon-key"
-PASSWORD = "your-secure-password-here"
+# Optional
+# AUTH_ALLOWED_ROLES = "admin,analyst"
 ```
 
 ### 3. Run the app
@@ -36,7 +37,10 @@ The app will open at `http://localhost:8501`
 
 ## Features
 
-- Password-protected access
+- Supabase Auth email/password login
+- Authenticated-only access control
+- Optional role-based authorization via `AUTH_ALLOWED_ROLES`
+- Current-user indicator and logout action
 - Searchable, filterable table of opportunities
 - Filter by source type (Ask HN / Show HN)
 - Filter by minimum score
@@ -45,6 +49,30 @@ The app will open at `http://localhost:8501`
 - Dark theme matching Build Signals branding
 - Links to original HN discussions
 - Matched GitHub repos with star counts
+
+
+## Auth configuration
+
+The app now uses **Supabase Auth identities** (instead of a shared global password) for access control.
+
+Required values:
+
+- `SUPABASE_URL` - Your Supabase project URL
+- `SUPABASE_KEY` - Your Supabase anon/public key used by the Streamlit app
+
+Optional values:
+
+- `AUTH_ALLOWED_ROLES` - Comma-separated list of allowed roles (for example: `admin,analyst`).
+  - When provided, users must have `user.app_metadata.role` matching one of these values.
+  - When omitted, any authenticated Supabase user can access the dashboard.
+
+### Migration from `PASSWORD`
+
+1. Remove `PASSWORD` from your deployment secrets and `.streamlit/secrets.toml`.
+2. Ensure email/password auth is enabled in Supabase Auth (Authentication → Providers → Email).
+3. Create users in Supabase Auth (Authentication → Users), or allow signups per your org policy.
+4. (Optional) Set each user's `app_metadata.role` and configure `AUTH_ALLOWED_ROLES`.
+5. Redeploy/restart the Streamlit app so it picks up the new auth settings.
 
 ## Deployment
 
@@ -62,4 +90,4 @@ For other deployment platforms, set these environment variables or use the secre
 
 - `SUPABASE_URL` - Your Supabase project URL
 - `SUPABASE_KEY` - Your Supabase anon/public key
-- `PASSWORD` - Dashboard access password
+- `AUTH_ALLOWED_ROLES` (optional) - Comma-separated role allowlist checked against `user.app_metadata.role`

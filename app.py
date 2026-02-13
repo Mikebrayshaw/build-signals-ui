@@ -357,8 +357,24 @@ def render_opportunity(opp):
     date_str = ""
     if created_at:
         try:
-            date_str = created_at[:10]
-        except:
+            if isinstance(created_at, str):
+                normalized = created_at.replace("Z", "+00:00")
+                date_str = datetime.fromisoformat(normalized).date().isoformat()
+            elif isinstance(created_at, datetime):
+                date_str = created_at.date().isoformat()
+            elif isinstance(created_at, date):
+                date_str = created_at.isoformat()
+            else:
+                raise TypeError(f"Unsupported created_at type: {type(created_at).__name__}")
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.warning(
+                "Could not parse created_at value",
+                extra={
+                    "created_at_value": repr(created_at),
+                    "created_at_type": type(created_at).__name__,
+                    "error_type": exc.__class__.__name__,
+                },
+            )
             date_str = ""
 
     title_link = render_safe_link(

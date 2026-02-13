@@ -259,20 +259,48 @@ def init_supabase():
     return create_client(supabase_url, supabase_key)
 
 
-def fetch_opportunities(supabase, limit=None, offset=0):
-    """Fetch opportunities from Supabase with optional pagination."""
+def fetch_opportunities(
+    supabase,
+    source_filter="All",
+    min_score=0,
+    keyword_search="",
+    sort_field="score",
+    sort_desc=True,
+    range_start=0,
+    range_end=DEFAULT_PAGE_SIZE - 1,
+):
+    """Fetch opportunities from Supabase with server-side filtering, sorting, and pagination."""
     try:
         query = supabase.table("opportunities").select("*", count="exact")
-        
-        if limit:
-            query = query.range(offset, offset + limit - 1)
-        
+
+        if source_filter == "Ask HN":
+            query = query.ilike("title", "Ask HN:%")
+        elif source_filter == "Show HN":
+            query = query.ilike("title", "Show HN:%")
+
+        if min_score > 0:
+            query = query.gte("score", min_score)
+
+        if keyword_search:
+            escaped_search = keyword_search.replace('%', '\\%').replace(',', '\\,')
+            query = query.or_(
+                f"title.ilike.%{escaped_search}%,keywords::text.ilike.%{escaped_search}%"
+            )
+
+        query = query.order(sort_field, desc=sort_desc, nullsfirst=False)
+        query = query.range(range_start, range_end)
+
         response = query.execute()
-        logger.info(f"Fetched {len(response.data)} opportunities from database")
-        return response.data, getattr(response, 'count', len(response.data))
+        total_count = getattr(response, "count", 0) or 0
+        logger.info(
+            "Fetched %s opportunities from database (%s total matches)",
+            len(response.data),
+            total_count,
+        )
+        return response.data, total_count, None
     except Exception as e:
-        st.error(f"⚠️ Database Error: Failed to fetch opportunities - {str(e)}")
-        return [], 0
+        logger.exception("Database query failed")
+        return [], 0, "We couldn't load opportunities right now. Please try again shortly."
 
 
 def safe_text(value):
@@ -435,8 +463,7 @@ def main():
     source_filter = st.sidebar.selectbox("Source Type", source_options)
 
     # Minimum score filter
-    max_score = max([o.get("score", 0) for o in opportunities]) if opportunities else 100
-    min_score = st.sidebar.slider("Minimum Score", 0, max_score, 0)
+    min_score = st.sidebar.number_input("Minimum Score", min_value=0, value=0, step=1)
 
     # Keyword search
     keyword_search = st.sidebar.text_input("Search Keywords", placeholder="e.g., API, automation")
@@ -458,51 +485,28 @@ def main():
     st.sidebar.markdown("## Pagination")
     page_size = st.sidebar.selectbox("Items per page", [25, 50, 100], index=1)
 
-    # Apply filters
-    filtered = opportunities
+    # Initial count request for pagination controls
+    with st.spinner("Loading opportunities..."):
+        _, total_count, query_error = fetch_opportunities(
+            supabase,
+            source_filter=source_filter,
+            min_score=min_score,
+            keyword_search=keyword_search,
+            sort_field=sort_field,
+            sort_desc=sort_desc,
+            range_start=0,
+            range_end=0,
+        )
 
-    # Source filter
-    if source_filter != "All":
-        filtered = [o for o in filtered if source_filter in o.get("title", "")]
+    if query_error:
+        st.error(query_error)
+        return
 
-    # Score filter
-    filtered = [o for o in filtered if o.get("score", 0) >= min_score]
+    if total_count == 0:
+        st.info("No opportunities match your current filters. Try broadening your search.")
+        return
 
-    # Keyword search
-    if keyword_search:
-        search_lower = keyword_search.lower()
-        filtered = [
-            o for o in filtered
-            if search_lower in o.get("title", "").lower()
-            or search_lower in str(o.get("keywords", [])).lower()
-        ]
-
-    # Sort
-    filtered = sorted(
-        filtered,
-        key=lambda x: x.get(sort_field, 0) or 0,
-        reverse=sort_desc
-    )
-
-    # Log filter results
-    logger.info(f"Filtered to {len(filtered)} opportunities (from {len(opportunities)} total)")
-
-    # Stats
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Opportunities", len(filtered))
-    with col2:
-        avg_score = sum(o.get("score", 0) for o in filtered) / len(filtered) if filtered else 0
-        st.metric("Avg Score", f"{avg_score:.0f}")
-    with col3:
-        with_repos = len([o for o in filtered if o.get("github_repos")])
-        st.metric("With GitHub Repos", with_repos)
-
-    st.markdown("---")
-
-    # Calculate pagination
-    total_filtered = len(filtered)
-    total_pages = (total_filtered + page_size - 1) // page_size
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
 
     # Page selector
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -515,10 +519,36 @@ def main():
             help=f"Total pages: {total_pages}"
         )
 
-    # Slice filtered results for current page
+    # Fetch only current page
     start_idx = (page - 1) * page_size
     end_idx = start_idx + page_size
-    page_opportunities = filtered[start_idx:end_idx]
+    page_opportunities, _, query_error = fetch_opportunities(
+        supabase,
+        source_filter=source_filter,
+        min_score=min_score,
+        keyword_search=keyword_search,
+        sort_field=sort_field,
+        sort_desc=sort_desc,
+        range_start=start_idx,
+        range_end=end_idx - 1,
+    )
+
+    if query_error:
+        st.error(query_error)
+        return
+
+    # Stats from current page + global match count
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Opportunities", total_count)
+    with col2:
+        avg_score = sum(o.get("score", 0) for o in page_opportunities) / len(page_opportunities) if page_opportunities else 0
+        st.metric("Avg Score (Page)", f"{avg_score:.0f}")
+    with col3:
+        with_repos = len([o for o in page_opportunities if o.get("github_repos")])
+        st.metric("With GitHub Repos (Page)", with_repos)
+
+    st.markdown("---")
 
     # Display paginated opportunities
     if page_opportunities:
@@ -541,7 +571,7 @@ def main():
 
     st.sidebar.markdown("---")
     st.sidebar.markdown(
-        f"*Showing {len(page_opportunities)} of {len(filtered)} opportunities (Page {page}/{total_pages})*"
+        f"*Showing {len(page_opportunities)} of {total_count} opportunities (Page {page}/{total_pages})*"
     )
 
 

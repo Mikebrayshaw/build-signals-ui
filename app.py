@@ -1,6 +1,7 @@
 import os
 import logging
-from datetime import datetime, date
+import html
+from urllib.parse import urlparse
 import streamlit as st
 from supabase import create_client
 
@@ -139,31 +140,84 @@ st.markdown("""
 
 
 def check_password():
-    """Simple password protection."""
+    """Identity-based authentication using Supabase Auth."""
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
+    if "auth_user" not in st.session_state:
+        st.session_state.auth_user = None
+    if "auth_session" not in st.session_state:
+        st.session_state.auth_session = None
 
-    # Read PASSWORD from Railway env var first, fallback to Streamlit secrets
-    expected_password = os.getenv("PASSWORD") or st.secrets.get("PASSWORD")
+    supabase = init_supabase()
 
-    if not expected_password:
-        st.error("Missing PASSWORD. Set it in Railway Variables.")
-        st.stop()
+    # Restore existing session after rerun/reload
+    if st.session_state.auth_session and not st.session_state.auth_user:
+        try:
+            session_data = st.session_state.auth_session
+            supabase.auth.set_session(
+                session_data["access_token"],
+                session_data["refresh_token"],
+            )
+            user_response = supabase.auth.get_user()
+            st.session_state.auth_user = user_response.user
+            st.session_state.authenticated = user_response.user is not None
+        except Exception as e:
+            logger.warning(f"Failed to restore auth session: {e}")
+            st.session_state.authenticated = False
+            st.session_state.auth_user = None
+            st.session_state.auth_session = None
 
-    if not st.session_state.authenticated:
+    allowed_roles = os.getenv("AUTH_ALLOWED_ROLES") or st.secrets.get("AUTH_ALLOWED_ROLES", "")
+    allowed_roles = {role.strip() for role in allowed_roles.split(",") if role.strip()}
+
+    # Render login form when no active user is present
+    if not st.session_state.authenticated or not st.session_state.auth_user:
         st.markdown("## 🏗️ Build Signals")
-        st.markdown("Enter password to access the dashboard.")
+        st.markdown("Sign in with your account to access the dashboard.")
 
-        password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if password == expected_password:
-                logger.info("Successful login attempt")
+        with st.form("login_form"):
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in")
+
+        if submitted:
+            try:
+                auth_response = supabase.auth.sign_in_with_password(
+                    {"email": email, "password": password}
+                )
+                user = auth_response.user
+
+                if not user:
+                    st.error("Unable to sign in. Check your credentials.")
+                    return False
+
+                user_role = (user.app_metadata or {}).get("role")
+                if allowed_roles and user_role not in allowed_roles:
+                    supabase.auth.sign_out()
+                    logger.warning(f"Rejected login for {user.email}; missing required role")
+                    st.error("Your account is authenticated but not authorized for this app.")
+                    return False
+
+                st.session_state.auth_user = user
                 st.session_state.authenticated = True
+                st.session_state.auth_session = {
+                    "access_token": auth_response.session.access_token,
+                    "refresh_token": auth_response.session.refresh_token,
+                }
+                logger.info(f"Successful login attempt for {user.email}")
                 st.rerun()
-            else:
-                logger.warning("Failed login attempt")
-                st.error("Incorrect password")
+            except Exception as e:
+                logger.warning(f"Failed login attempt: {e}")
+                st.error("Incorrect email/password or account unavailable.")
+
         return False
+
+    # Authorization gate for role-based access (optional)
+    if allowed_roles:
+        user_role = (st.session_state.auth_user.app_metadata or {}).get("role")
+        if user_role not in allowed_roles:
+            st.error("You are authenticated but not authorized for this dashboard.")
+            return False
 
     return True
 
@@ -205,61 +259,78 @@ def init_supabase():
     return create_client(supabase_url, supabase_key)
 
 
-def fetch_opportunities(supabase, limit=None, offset=0):
-    """Fetch opportunities from Supabase with optional pagination."""
-    def classify_supabase_error(error):
-        """Classify Supabase errors for clearer operator logs and user messaging."""
-        message = str(error).lower()
-        error_module = error.__class__.__module__.lower()
-
-        network_markers = (
-            "timeout", "timed out", "connection", "dns", "temporarily unavailable", "network"
-        )
-        auth_markers = ("unauthorized", "forbidden", "jwt", "api key", "apikey", "401", "403")
-        query_markers = (
-            "postgrest", "invalid input", "syntax", "relation", "column", "query", "42p"
-        )
-
-        if any(marker in message for marker in network_markers) or any(
-            marker in error_module for marker in ("requests", "httpx", "urllib3", "socket")
-        ):
-            return "network"
-        if any(marker in message for marker in auth_markers):
-            return "auth"
-        if any(marker in message for marker in query_markers):
-            return "query"
-        return "unknown"
-
+def fetch_opportunities(
+    supabase,
+    source_filter="All",
+    min_score=0,
+    keyword_search="",
+    sort_field="score",
+    sort_desc=True,
+    range_start=0,
+    range_end=DEFAULT_PAGE_SIZE - 1,
+):
+    """Fetch opportunities from Supabase with server-side filtering, sorting, and pagination."""
     try:
         query = supabase.table("opportunities").select("*", count="exact")
 
-        if limit:
-            query = query.range(offset, offset + limit - 1)
+        if source_filter == "Ask HN":
+            query = query.ilike("title", "Ask HN:%")
+        elif source_filter == "Show HN":
+            query = query.ilike("title", "Show HN:%")
+
+        if min_score > 0:
+            query = query.gte("score", min_score)
+
+        if keyword_search:
+            escaped_search = keyword_search.replace('%', '\\%').replace(',', '\\,')
+            query = query.or_(
+                f"title.ilike.%{escaped_search}%,keywords::text.ilike.%{escaped_search}%"
+            )
+
+        query = query.order(sort_field, desc=sort_desc, nullsfirst=False)
+        query = query.range(range_start, range_end)
 
         response = query.execute()
-        logger.info(f"Fetched {len(response.data)} opportunities from database")
-        return response.data, getattr(response, 'count', len(response.data))
+        total_count = getattr(response, "count", 0) or 0
+        logger.info(
+            "Fetched %s opportunities from database (%s total matches)",
+            len(response.data),
+            total_count,
+        )
+        return response.data, total_count, None
     except Exception as e:
-        error_category = classify_supabase_error(e)
-        logger.exception(
-            "Failed to fetch opportunities",
-            extra={
-                "error_category": error_category,
-                "table": "opportunities",
-                "limit": limit,
-                "offset": offset,
-                "error_type": e.__class__.__name__,
-            },
+        logger.exception("Database query failed")
+        return [], 0, "We couldn't load opportunities right now. Please try again shortly."
+
+
+def safe_text(value):
+    """Escape text for safe HTML rendering."""
+    return html.escape(str(value) if value is not None else "")
+
+
+def is_valid_url(url):
+    """Validate URL for rendering clickable links."""
+    if not url:
+        return False
+
+    parsed = urlparse(str(url))
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def render_safe_link(url, label, css_class="", style="", allow_html_label=False):
+    """Render either a safe anchor tag or plain text when URL is invalid."""
+    safe_label = label if allow_html_label else safe_text(label)
+    safe_class = safe_text(css_class)
+    safe_style = safe_text(style)
+
+    if is_valid_url(url):
+        safe_url = safe_text(url)
+        return (
+            f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
+            f'class="{safe_class}" style="{safe_style}">{safe_label}</a>'
         )
 
-        user_message = {
-            "network": "⚠️ Unable to reach the database service. Please try again shortly.",
-            "auth": "⚠️ Database access is not configured correctly.",
-            "query": "⚠️ Could not load opportunities due to a data query issue.",
-            "unknown": "⚠️ Failed to load opportunities.",
-        }
-        st.error(user_message.get(error_category, user_message["unknown"]))
-        return [], 0
+    return f'<span class="{safe_class}" style="{safe_style}">{safe_label}</span>'
 
 
 def render_opportunity(opp):
@@ -276,6 +347,8 @@ def render_opportunity(opp):
     # Get data
     score = opp.get("score", 0)
     comments = opp.get("comments", 0)
+    safe_score = safe_text(score)
+    safe_comments = safe_text(comments)
     keywords = opp.get("keywords", []) or []
     github_repos = opp.get("github_repos", []) or []
     created_at = opp.get("created_at", "")
@@ -304,18 +377,26 @@ def render_opportunity(opp):
             )
             date_str = ""
 
+    title_link = render_safe_link(
+        hn_url,
+        title,
+        style="font-size: 16px; font-weight: 500; text-decoration: none;"
+    )
+    source_badge = (
+        f'<span class="source-tag {safe_text(source_class)}">{safe_text(source_label)}</span>'
+        if source_label else ''
+    )
+
     html = f"""
     <div class="opportunity-card">
         <div style="margin-bottom: 8px;">
-            <a href="{hn_url}" target="_blank" style="font-size: 16px; font-weight: 500; text-decoration: none;">
-                {title}
-            </a>
-            {f'<span class="source-tag {source_class}">{source_label}</span>' if source_label else ''}
+            {title_link}
+            {source_badge}
         </div>
         <div style="margin-bottom: 8px;">
-            <span class="score-badge">▲ {score}</span>
-            <span class="comments-badge">💬 {comments}</span>
-            <span style="color: #666; margin-left: 12px; font-size: 13px;">{date_str}</span>
+            <span class="score-badge">▲ {safe_score}</span>
+            <span class="comments-badge">💬 {safe_comments}</span>
+            <span style="color: #666; margin-left: 12px; font-size: 13px;">{safe_text(date_str)}</span>
         </div>
     """
 
@@ -323,7 +404,7 @@ def render_opportunity(opp):
     if keywords:
         html += '<div style="margin-bottom: 8px;">'
         for kw in keywords[:MAX_KEYWORDS_DISPLAY]:  # Limit to MAX_KEYWORDS_DISPLAY
-            html += f'<span class="keyword-tag">{kw}</span>'
+            html += f'<span class="keyword-tag">{safe_text(kw)}</span>'
         html += '</div>'
 
     # GitHub repos
@@ -339,13 +420,26 @@ def render_opportunity(opp):
                 repo_url = f"https://github.com/{repo}"
                 stars = 0
 
-            html += f'''
-            <a href="{repo_url}" target="_blank" class="repo-link" style="text-decoration: none;">
-                <span style="color: #888;">📦</span>
-                <span style="color: #22C55E;">{repo_name}</span>
-                {f'<span style="color: #666; margin-left: 8px;">⭐ {stars:,}</span>' if stars else ''}
-            </a>
-            '''
+            stars_badge = ""
+            if stars:
+                try:
+                    stars_badge = f'<span style="color: #666; margin-left: 8px;">⭐ {int(stars):,}</span>'
+                except (TypeError, ValueError):
+                    stars_badge = f'<span style="color: #666; margin-left: 8px;">⭐ {safe_text(stars)}</span>'
+
+            repo_label = (
+                '<span style="color: #888;">📦</span>'
+                f'<span style="color: #22C55E;">{safe_text(repo_name)}</span>'
+                f'{stars_badge}'
+            )
+
+            html += render_safe_link(
+                repo_url,
+                repo_label,
+                css_class="repo-link",
+                style="text-decoration: none;",
+                allow_html_label=True
+            )
         html += '</div>'
 
     html += '</div>'
@@ -364,6 +458,11 @@ def main():
     st.markdown("# 📡 Build Signals")
     st.markdown("*Discover opportunities from Hacker News discussions*")
 
+    auth_user = st.session_state.get("auth_user")
+    if auth_user:
+        user_role = (auth_user.app_metadata or {}).get("role", "user")
+        st.caption(f"Signed in as **{auth_user.email}** ({user_role})")
+
     # Fetch data
     with st.spinner("Loading opportunities..."):
         opportunities, total_count = fetch_opportunities(supabase)
@@ -380,8 +479,7 @@ def main():
     source_filter = st.sidebar.selectbox("Source Type", source_options)
 
     # Minimum score filter
-    max_score = max([o.get("score", 0) for o in opportunities]) if opportunities else 100
-    min_score = st.sidebar.slider("Minimum Score", 0, max_score, 0)
+    min_score = st.sidebar.number_input("Minimum Score", min_value=0, value=0, step=1)
 
     # Keyword search
     keyword_search = st.sidebar.text_input("Search Keywords", placeholder="e.g., API, automation")
@@ -403,51 +501,28 @@ def main():
     st.sidebar.markdown("## Pagination")
     page_size = st.sidebar.selectbox("Items per page", [25, 50, 100], index=1)
 
-    # Apply filters
-    filtered = opportunities
+    # Initial count request for pagination controls
+    with st.spinner("Loading opportunities..."):
+        _, total_count, query_error = fetch_opportunities(
+            supabase,
+            source_filter=source_filter,
+            min_score=min_score,
+            keyword_search=keyword_search,
+            sort_field=sort_field,
+            sort_desc=sort_desc,
+            range_start=0,
+            range_end=0,
+        )
 
-    # Source filter
-    if source_filter != "All":
-        filtered = [o for o in filtered if source_filter in o.get("title", "")]
+    if query_error:
+        st.error(query_error)
+        return
 
-    # Score filter
-    filtered = [o for o in filtered if o.get("score", 0) >= min_score]
+    if total_count == 0:
+        st.info("No opportunities match your current filters. Try broadening your search.")
+        return
 
-    # Keyword search
-    if keyword_search:
-        search_lower = keyword_search.lower()
-        filtered = [
-            o for o in filtered
-            if search_lower in o.get("title", "").lower()
-            or search_lower in str(o.get("keywords", [])).lower()
-        ]
-
-    # Sort
-    filtered = sorted(
-        filtered,
-        key=lambda x: x.get(sort_field, 0) or 0,
-        reverse=sort_desc
-    )
-
-    # Log filter results
-    logger.info(f"Filtered to {len(filtered)} opportunities (from {len(opportunities)} total)")
-
-    # Stats
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Opportunities", len(filtered))
-    with col2:
-        avg_score = sum(o.get("score", 0) for o in filtered) / len(filtered) if filtered else 0
-        st.metric("Avg Score", f"{avg_score:.0f}")
-    with col3:
-        with_repos = len([o for o in filtered if o.get("github_repos")])
-        st.metric("With GitHub Repos", with_repos)
-
-    st.markdown("---")
-
-    # Calculate pagination
-    total_filtered = len(filtered)
-    total_pages = (total_filtered + page_size - 1) // page_size
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
 
     # Page selector
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -460,10 +535,36 @@ def main():
             help=f"Total pages: {total_pages}"
         )
 
-    # Slice filtered results for current page
+    # Fetch only current page
     start_idx = (page - 1) * page_size
     end_idx = start_idx + page_size
-    page_opportunities = filtered[start_idx:end_idx]
+    page_opportunities, _, query_error = fetch_opportunities(
+        supabase,
+        source_filter=source_filter,
+        min_score=min_score,
+        keyword_search=keyword_search,
+        sort_field=sort_field,
+        sort_desc=sort_desc,
+        range_start=start_idx,
+        range_end=end_idx - 1,
+    )
+
+    if query_error:
+        st.error(query_error)
+        return
+
+    # Stats from current page + global match count
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Opportunities", total_count)
+    with col2:
+        avg_score = sum(o.get("score", 0) for o in page_opportunities) / len(page_opportunities) if page_opportunities else 0
+        st.metric("Avg Score (Page)", f"{avg_score:.0f}")
+    with col3:
+        with_repos = len([o for o in page_opportunities if o.get("github_repos")])
+        st.metric("With GitHub Repos (Page)", with_repos)
+
+    st.markdown("---")
 
     # Display paginated opportunities
     if page_opportunities:
@@ -474,8 +575,19 @@ def main():
 
     # Footer
     st.sidebar.markdown("---")
+    if st.sidebar.button("Logout"):
+        try:
+            supabase.auth.sign_out()
+        except Exception as e:
+            logger.warning(f"Error while signing out: {e}")
+        st.session_state.authenticated = False
+        st.session_state.auth_user = None
+        st.session_state.auth_session = None
+        st.rerun()
+
+    st.sidebar.markdown("---")
     st.sidebar.markdown(
-        f"*Showing {len(page_opportunities)} of {len(filtered)} opportunities (Page {page}/{total_pages})*"
+        f"*Showing {len(page_opportunities)} of {total_count} opportunities (Page {page}/{total_pages})*"
     )
 
 

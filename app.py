@@ -1,16 +1,21 @@
 import os
 import logging
 import html
+from datetime import date, datetime
 from urllib.parse import urlparse
 import streamlit as st
 from supabase import create_client
 
 from app_logic import (
+    MAX_KEYWORDS_DISPLAY,
+    MAX_REPOS_DISPLAY,
     build_opportunity_html,
     evaluate_password_gate,
     filter_opportunities,
     sort_opportunities,
 )
+
+DEFAULT_PAGE_SIZE = 50
 
 # Configure logging
 logging.basicConfig(

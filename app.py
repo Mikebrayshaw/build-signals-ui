@@ -5,19 +5,19 @@ from urllib.parse import urlparse
 import streamlit as st
 from supabase import create_client
 
+from app_logic import (
+    build_opportunity_html,
+    evaluate_password_gate,
+    filter_opportunities,
+    sort_opportunities,
+)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# Configuration constants
-MAX_KEYWORDS_DISPLAY = 8
-MAX_REPOS_DISPLAY = 5
-DEFAULT_PAGE_SIZE = 50
-CACHE_TTL_SECONDS = 300  # 5 minutes
-
 
 # Page config
 st.set_page_config(

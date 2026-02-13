@@ -4,6 +4,8 @@ import streamlit as st
 from supabase import create_client
 
 from app_logic import (
+    MAX_KEYWORDS_DISPLAY,
+    MAX_REPOS_DISPLAY,
     build_opportunity_html,
 )
 

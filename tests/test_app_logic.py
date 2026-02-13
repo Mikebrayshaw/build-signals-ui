@@ -88,3 +88,16 @@ def test_build_opportunity_html_sanitizes_content_and_urls():
     assert 'href="#"' in html
     assert "&lt;b&gt;bold&lt;/b&gt;" in html
     assert "&lt;img src=x onerror=1&gt;" in html
+
+
+def test_build_opportunity_html_respects_keyword_and_repo_limits():
+    opp = {
+        "title": "Show HN: Something",
+        "keywords": ["one", "two", "three"],
+        "github_repos": ["a/b", "c/d", "e/f"],
+    }
+
+    html = build_opportunity_html(opp, max_keywords=2, max_repos=1)
+
+    assert html.count('class="keyword-tag"') == 2
+    assert html.count('class="repo-link"') == 1

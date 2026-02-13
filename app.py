@@ -3,19 +3,19 @@ import logging
 import streamlit as st
 from supabase import create_client
 
+from app_logic import (
+    build_opportunity_html,
+    evaluate_password_gate,
+    filter_opportunities,
+    sort_opportunities,
+)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# Configuration constants
-MAX_KEYWORDS_DISPLAY = 8
-MAX_REPOS_DISPLAY = 5
-DEFAULT_PAGE_SIZE = 50
-CACHE_TTL_SECONDS = 300  # 5 minutes
-
 
 # Page config
 st.set_page_config(
@@ -145,7 +145,13 @@ def check_password():
     # Read PASSWORD from Railway env var first, fallback to Streamlit secrets
     expected_password = os.getenv("PASSWORD") or st.secrets.get("PASSWORD")
 
-    if not expected_password:
+    missing_password_result = evaluate_password_gate(
+        is_authenticated=st.session_state.authenticated,
+        expected_password=expected_password,
+        submitted_password="",
+        login_clicked=False,
+    )
+    if missing_password_result.error == "missing_password":
         st.error("Missing PASSWORD. Set it in Railway Variables.")
         st.stop()
 
@@ -154,15 +160,23 @@ def check_password():
         st.markdown("Enter password to access the dashboard.")
 
         password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if password == expected_password:
-                logger.info("Successful login attempt")
-                st.session_state.authenticated = True
-                st.rerun()
-            else:
-                logger.warning("Failed login attempt")
-                st.error("Incorrect password")
-        return False
+        login_clicked = st.button("Login")
+
+        result = evaluate_password_gate(
+            is_authenticated=st.session_state.authenticated,
+            expected_password=expected_password,
+            submitted_password=password,
+            login_clicked=login_clicked,
+        )
+
+        if result.error == "incorrect_password":
+            logger.warning("Failed login attempt")
+            st.error("Incorrect password")
+        if result.should_rerun:
+            logger.info("Successful login attempt")
+            st.session_state.authenticated = result.authenticated
+            st.rerun()
+        return result.allow_access
 
     return True
 
@@ -222,76 +236,7 @@ def fetch_opportunities(supabase, limit=None, offset=0):
 
 def render_opportunity(opp):
     """Render a single opportunity card."""
-    # Determine source type and styling
-    title = opp.get("title", "Untitled")
-    source_class = "source-ask" if "Ask HN" in title else "source-show" if "Show HN" in title else ""
-    source_label = "Ask HN" if "Ask HN" in title else "Show HN" if "Show HN" in title else ""
-
-    # Build HN URL
-    hn_id = opp.get("hn_id", "")
-    hn_url = f"https://news.ycombinator.com/item?id={hn_id}" if hn_id else "#"
-
-    # Get data
-    score = opp.get("score", 0)
-    comments = opp.get("comments", 0)
-    keywords = opp.get("keywords", []) or []
-    github_repos = opp.get("github_repos", []) or []
-    created_at = opp.get("created_at", "")
-
-    # Format date
-    date_str = ""
-    if created_at:
-        try:
-            date_str = created_at[:10]
-        except:
-            date_str = ""
-
-    html = f"""
-    <div class="opportunity-card">
-        <div style="margin-bottom: 8px;">
-            <a href="{hn_url}" target="_blank" style="font-size: 16px; font-weight: 500; text-decoration: none;">
-                {title}
-            </a>
-            {f'<span class="source-tag {source_class}">{source_label}</span>' if source_label else ''}
-        </div>
-        <div style="margin-bottom: 8px;">
-            <span class="score-badge">▲ {score}</span>
-            <span class="comments-badge">💬 {comments}</span>
-            <span style="color: #666; margin-left: 12px; font-size: 13px;">{date_str}</span>
-        </div>
-    """
-
-    # Keywords
-    if keywords:
-        html += '<div style="margin-bottom: 8px;">'
-        for kw in keywords[:MAX_KEYWORDS_DISPLAY]:  # Limit to MAX_KEYWORDS_DISPLAY
-            html += f'<span class="keyword-tag">{kw}</span>'
-        html += '</div>'
-
-    # GitHub repos
-    if github_repos:
-        html += '<div style="margin-top: 12px;">'
-        for repo in github_repos[:MAX_REPOS_DISPLAY]:  # Limit to MAX_REPOS_DISPLAY
-            if isinstance(repo, dict):
-                repo_name = repo.get("name", repo.get("full_name", "Unknown"))
-                repo_url = repo.get("url", repo.get("html_url", "#"))
-                stars = repo.get("stars", repo.get("stargazers_count", 0))
-            else:
-                repo_name = str(repo)
-                repo_url = f"https://github.com/{repo}"
-                stars = 0
-
-            html += f'''
-            <a href="{repo_url}" target="_blank" class="repo-link" style="text-decoration: none;">
-                <span style="color: #888;">📦</span>
-                <span style="color: #22C55E;">{repo_name}</span>
-                {f'<span style="color: #666; margin-left: 8px;">⭐ {stars:,}</span>' if stars else ''}
-            </a>
-            '''
-        html += '</div>'
-
-    html += '</div>'
-
+    html = build_opportunity_html(opp)
     st.markdown(html, unsafe_allow_html=True)
 
 
@@ -346,29 +291,17 @@ def main():
     page_size = st.sidebar.selectbox("Items per page", [25, 50, 100], index=1)
 
     # Apply filters
-    filtered = opportunities
+    filtered = filter_opportunities(
+        opportunities,
+        source_filter=source_filter,
+        min_score=min_score,
+        keyword_search=keyword_search,
+    )
 
-    # Source filter
-    if source_filter != "All":
-        filtered = [o for o in filtered if source_filter in o.get("title", "")]
-
-    # Score filter
-    filtered = [o for o in filtered if o.get("score", 0) >= min_score]
-
-    # Keyword search
-    if keyword_search:
-        search_lower = keyword_search.lower()
-        filtered = [
-            o for o in filtered
-            if search_lower in o.get("title", "").lower()
-            or search_lower in str(o.get("keywords", [])).lower()
-        ]
-
-    # Sort
-    filtered = sorted(
+    filtered = sort_opportunities(
         filtered,
-        key=lambda x: x.get(sort_field, 0) or 0,
-        reverse=sort_desc
+        sort_field=sort_field,
+        sort_desc=sort_desc,
     )
 
     # Log filter results

@@ -34,6 +34,14 @@ streamlit run app.py
 
 The app will open at `http://localhost:8501`
 
+## Running tests
+
+Run the automated test suite with:
+
+```bash
+pytest
+```
+
 ## Features
 
 - Password-protected access

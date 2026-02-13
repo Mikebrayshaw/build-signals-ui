@@ -26,7 +26,7 @@ LLM/AI:              None
 Hosting/Deploy:      Procfile present for process-based deploy (e.g., Railway/Heroku-style dyno); README also documents Streamlit Cloud deployment
 CI/CD:               None detected (.github/workflows absent)
 Email/Notifications: None detected
-Other services:      pandas 2.2.0 dependency listed but not used in app.py
+Other services:      None
 ```
 
 ### Dependency/config files reviewed
@@ -204,7 +204,6 @@ Notes:
 - Bare `except:` in date formatting swallows all exceptions in `render_opportunity`.
 - `fetch_opportunities` retrieves full table (`select('*')`) before filtering in app memory; could become slow with growth.
 - Unused constants: `DEFAULT_PAGE_SIZE`, `CACHE_TTL_SECONDS` declared but not used.
-- `pandas` dependency appears unused.
 - Logging includes successful/failed login attempts but no rate limiting/lockout.
 - Shared password auth is minimal and not user-specific.
 - HTML rendered with `unsafe_allow_html=True`; acceptable for controlled content, but risky if untrusted text reaches HTML.

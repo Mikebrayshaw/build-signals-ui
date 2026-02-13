@@ -1,16 +1,13 @@
 import os
 import logging
-import html
-from urllib.parse import urlparse
 import streamlit as st
 from supabase import create_client
 
 from app_logic import (
     build_opportunity_html,
-    evaluate_password_gate,
-    filter_opportunities,
-    sort_opportunities,
 )
+
+DEFAULT_PAGE_SIZE = 50
 
 # Configure logging
 logging.basicConfig(
@@ -303,148 +300,9 @@ def fetch_opportunities(
         return [], 0, "We couldn't load opportunities right now. Please try again shortly."
 
 
-def safe_text(value):
-    """Escape text for safe HTML rendering."""
-    return html.escape(str(value) if value is not None else "")
-
-
-def is_valid_url(url):
-    """Validate URL for rendering clickable links."""
-    if not url:
-        return False
-
-    parsed = urlparse(str(url))
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-
-def render_safe_link(url, label, css_class="", style="", allow_html_label=False):
-    """Render either a safe anchor tag or plain text when URL is invalid."""
-    safe_label = label if allow_html_label else safe_text(label)
-    safe_class = safe_text(css_class)
-    safe_style = safe_text(style)
-
-    if is_valid_url(url):
-        safe_url = safe_text(url)
-        return (
-            f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
-            f'class="{safe_class}" style="{safe_style}">{safe_label}</a>'
-        )
-
-    return f'<span class="{safe_class}" style="{safe_style}">{safe_label}</span>'
-
-
 def render_opportunity(opp):
     """Render a single opportunity card."""
-    # Determine source type and styling
-    title = opp.get("title", "Untitled")
-    source_class = "source-ask" if "Ask HN" in title else "source-show" if "Show HN" in title else ""
-    source_label = "Ask HN" if "Ask HN" in title else "Show HN" if "Show HN" in title else ""
-
-    # Build HN URL
-    hn_id = opp.get("hn_id", "")
-    hn_url = f"https://news.ycombinator.com/item?id={hn_id}" if hn_id else "#"
-
-    # Get data
-    score = opp.get("score", 0)
-    comments = opp.get("comments", 0)
-    safe_score = safe_text(score)
-    safe_comments = safe_text(comments)
-    keywords = opp.get("keywords", []) or []
-    github_repos = opp.get("github_repos", []) or []
-    created_at = opp.get("created_at", "")
-
-    # Format date
-    date_str = ""
-    if created_at:
-        try:
-            if isinstance(created_at, str):
-                normalized = created_at.replace("Z", "+00:00")
-                date_str = datetime.fromisoformat(normalized).date().isoformat()
-            elif isinstance(created_at, datetime):
-                date_str = created_at.date().isoformat()
-            elif isinstance(created_at, date):
-                date_str = created_at.isoformat()
-            else:
-                raise TypeError(f"Unsupported created_at type: {type(created_at).__name__}")
-        except (TypeError, ValueError, AttributeError) as exc:
-            logger.warning(
-                "Could not parse created_at value",
-                extra={
-                    "created_at_value": repr(created_at),
-                    "created_at_type": type(created_at).__name__,
-                    "error_type": exc.__class__.__name__,
-                },
-            )
-            date_str = ""
-
-    title_link = render_safe_link(
-        hn_url,
-        title,
-        style="font-size: 16px; font-weight: 500; text-decoration: none;"
-    )
-    source_badge = (
-        f'<span class="source-tag {safe_text(source_class)}">{safe_text(source_label)}</span>'
-        if source_label else ''
-    )
-
-    html = f"""
-    <div class="opportunity-card">
-        <div style="margin-bottom: 8px;">
-            {title_link}
-            {source_badge}
-        </div>
-        <div style="margin-bottom: 8px;">
-            <span class="score-badge">▲ {safe_score}</span>
-            <span class="comments-badge">💬 {safe_comments}</span>
-            <span style="color: #666; margin-left: 12px; font-size: 13px;">{safe_text(date_str)}</span>
-        </div>
-    """
-
-    # Keywords
-    if keywords:
-        html += '<div style="margin-bottom: 8px;">'
-        for kw in keywords[:MAX_KEYWORDS_DISPLAY]:  # Limit to MAX_KEYWORDS_DISPLAY
-            html += f'<span class="keyword-tag">{safe_text(kw)}</span>'
-        html += '</div>'
-
-    # GitHub repos
-    if github_repos:
-        html += '<div style="margin-top: 12px;">'
-        for repo in github_repos[:MAX_REPOS_DISPLAY]:  # Limit to MAX_REPOS_DISPLAY
-            if isinstance(repo, dict):
-                repo_name = repo.get("name", repo.get("full_name", "Unknown"))
-                repo_url = repo.get("url", repo.get("html_url", "#"))
-                stars = repo.get("stars", repo.get("stargazers_count", 0))
-            else:
-                repo_name = str(repo)
-                repo_url = f"https://github.com/{repo}"
-                stars = 0
-
-            stars_badge = ""
-            if stars:
-                try:
-                    stars_badge = f'<span style="color: #666; margin-left: 8px;">⭐ {int(stars):,}</span>'
-                except (TypeError, ValueError):
-                    stars_badge = f'<span style="color: #666; margin-left: 8px;">⭐ {safe_text(stars)}</span>'
-
-            repo_label = (
-                '<span style="color: #888;">📦</span>'
-                f'<span style="color: #22C55E;">{safe_text(repo_name)}</span>'
-                f'{stars_badge}'
-            )
-
-            html += render_safe_link(
-                repo_url,
-                repo_label,
-                css_class="repo-link",
-                style="text-decoration: none;",
-                allow_html_label=True
-            )
-        html += '</div>'
-
-    html += '</div>'
-
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown(build_opportunity_html(opp), unsafe_allow_html=True)
 
 
 def main():

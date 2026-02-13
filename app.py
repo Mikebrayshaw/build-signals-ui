@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import datetime, date
 import streamlit as st
 from supabase import create_client
 
@@ -206,17 +207,58 @@ def init_supabase():
 
 def fetch_opportunities(supabase, limit=None, offset=0):
     """Fetch opportunities from Supabase with optional pagination."""
+    def classify_supabase_error(error):
+        """Classify Supabase errors for clearer operator logs and user messaging."""
+        message = str(error).lower()
+        error_module = error.__class__.__module__.lower()
+
+        network_markers = (
+            "timeout", "timed out", "connection", "dns", "temporarily unavailable", "network"
+        )
+        auth_markers = ("unauthorized", "forbidden", "jwt", "api key", "apikey", "401", "403")
+        query_markers = (
+            "postgrest", "invalid input", "syntax", "relation", "column", "query", "42p"
+        )
+
+        if any(marker in message for marker in network_markers) or any(
+            marker in error_module for marker in ("requests", "httpx", "urllib3", "socket")
+        ):
+            return "network"
+        if any(marker in message for marker in auth_markers):
+            return "auth"
+        if any(marker in message for marker in query_markers):
+            return "query"
+        return "unknown"
+
     try:
         query = supabase.table("opportunities").select("*", count="exact")
-        
+
         if limit:
             query = query.range(offset, offset + limit - 1)
-        
+
         response = query.execute()
         logger.info(f"Fetched {len(response.data)} opportunities from database")
         return response.data, getattr(response, 'count', len(response.data))
     except Exception as e:
-        st.error(f"⚠️ Database Error: Failed to fetch opportunities - {str(e)}")
+        error_category = classify_supabase_error(e)
+        logger.exception(
+            "Failed to fetch opportunities",
+            extra={
+                "error_category": error_category,
+                "table": "opportunities",
+                "limit": limit,
+                "offset": offset,
+                "error_type": e.__class__.__name__,
+            },
+        )
+
+        user_message = {
+            "network": "⚠️ Unable to reach the database service. Please try again shortly.",
+            "auth": "⚠️ Database access is not configured correctly.",
+            "query": "⚠️ Could not load opportunities due to a data query issue.",
+            "unknown": "⚠️ Failed to load opportunities.",
+        }
+        st.error(user_message.get(error_category, user_message["unknown"]))
         return [], 0
 
 
@@ -242,8 +284,24 @@ def render_opportunity(opp):
     date_str = ""
     if created_at:
         try:
-            date_str = created_at[:10]
-        except:
+            if isinstance(created_at, str):
+                normalized = created_at.replace("Z", "+00:00")
+                date_str = datetime.fromisoformat(normalized).date().isoformat()
+            elif isinstance(created_at, datetime):
+                date_str = created_at.date().isoformat()
+            elif isinstance(created_at, date):
+                date_str = created_at.isoformat()
+            else:
+                raise TypeError(f"Unsupported created_at type: {type(created_at).__name__}")
+        except (TypeError, ValueError, AttributeError) as exc:
+            logger.warning(
+                "Could not parse created_at value",
+                extra={
+                    "created_at_value": repr(created_at),
+                    "created_at_type": type(created_at).__name__,
+                    "error_type": exc.__class__.__name__,
+                },
+            )
             date_str = ""
 
     html = f"""

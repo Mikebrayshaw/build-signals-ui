@@ -1,22 +1,8 @@
+import json
 import os
-import logging
 import streamlit as st
 from supabase import create_client
 
-from app_logic import (
-    MAX_KEYWORDS_DISPLAY,
-    MAX_REPOS_DISPLAY,
-    build_opportunity_html,
-)
-
-DEFAULT_PAGE_SIZE = 50
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
@@ -58,13 +44,8 @@ st.markdown("""
         border-color: #333;
     }
 
-    /* Slider */
-    .stSlider > div > div > div > div {
-        background-color: #22C55E;
-    }
-
     /* Cards/containers */
-    .opportunity-card {
+    .card {
         background-color: #111112;
         border: 1px solid #222;
         border-radius: 8px;
@@ -72,7 +53,7 @@ st.markdown("""
         margin-bottom: 12px;
     }
 
-    .opportunity-card:hover {
+    .card:hover {
         border-color: #22C55E;
     }
 
@@ -85,34 +66,17 @@ st.markdown("""
         display: inline-block;
     }
 
-    .comments-badge {
-        background-color: #333;
-        color: #FFF;
+    .badge {
         padding: 4px 8px;
         border-radius: 4px;
         display: inline-block;
-        margin-left: 8px;
-    }
-
-    .keyword-tag {
-        background-color: #1E3A2F;
-        color: #22C55E;
-        padding: 2px 8px;
-        border-radius: 12px;
-        font-size: 12px;
         margin-right: 4px;
-        display: inline-block;
-        margin-bottom: 4px;
+        font-size: 13px;
     }
 
-    .repo-link {
-        background-color: #1A1A1B;
-        padding: 8px 12px;
-        border-radius: 4px;
-        margin-top: 8px;
-        display: inline-block;
-        margin-right: 8px;
-    }
+    .badge-draft { background-color: #333; color: #FFF; }
+    .badge-posted { background-color: #1E3A2F; color: #22C55E; }
+    .badge-skipped { background-color: #3B2020; color: #EF4444; }
 
     .source-tag {
         font-size: 11px;
@@ -121,15 +85,13 @@ st.markdown("""
         margin-left: 8px;
     }
 
-    .source-ask {
-        background-color: #3B2F1E;
-        color: #F59E0B;
-    }
+    .source-ask { background-color: #3B2F1E; color: #F59E0B; }
+    .source-show { background-color: #1E2D3B; color: #3B82F6; }
+    .source-ph { background-color: #2D1E3B; color: #A855F7; }
+    .source-gh { background-color: #1E3B2D; color: #22C55E; }
 
-    .source-show {
-        background-color: #1E2D3B;
-        color: #3B82F6;
-    }
+    .trend-rising { color: #22C55E; font-weight: bold; }
+    .trend-falling { color: #EF4444; }
 
     /* Hide Streamlit branding */
     #MainMenu {visibility: hidden;}
@@ -138,317 +100,372 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def _get_secret(key: str):
+    """Safely read from st.secrets without crashing when no secrets.toml exists."""
+    try:
+        return st.secrets[key]
+    except Exception:
+        return None
+
+
 def check_password():
-    """Identity-based authentication using Supabase Auth."""
+    """Simple password protection."""
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-    if "auth_user" not in st.session_state:
-        st.session_state.auth_user = None
-    if "auth_session" not in st.session_state:
-        st.session_state.auth_session = None
 
-    supabase = init_supabase()
+    expected_password = os.getenv("PASSWORD") or _get_secret("PASSWORD")
 
-    # Restore existing session after rerun/reload
-    if st.session_state.auth_session and not st.session_state.auth_user:
-        try:
-            session_data = st.session_state.auth_session
-            supabase.auth.set_session(
-                session_data["access_token"],
-                session_data["refresh_token"],
-            )
-            user_response = supabase.auth.get_user()
-            st.session_state.auth_user = user_response.user
-            st.session_state.authenticated = user_response.user is not None
-        except Exception as e:
-            logger.warning(f"Failed to restore auth session: {e}")
-            st.session_state.authenticated = False
-            st.session_state.auth_user = None
-            st.session_state.auth_session = None
+    if not expected_password:
+        st.error("Missing PASSWORD. Set it in Railway Variables.")
+        st.stop()
 
-    allowed_roles = os.getenv("AUTH_ALLOWED_ROLES") or st.secrets.get("AUTH_ALLOWED_ROLES", "")
-    allowed_roles = {role.strip() for role in allowed_roles.split(",") if role.strip()}
-
-    # Render login form when no active user is present
-    if not st.session_state.authenticated or not st.session_state.auth_user:
+    if not st.session_state.authenticated:
         st.markdown("## 🏗️ Build Signals")
-        st.markdown("Sign in with your account to access the dashboard.")
+        st.markdown("Enter password to access the dashboard.")
 
-        with st.form("login_form"):
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Sign in")
-
-        if submitted:
-            try:
-                auth_response = supabase.auth.sign_in_with_password(
-                    {"email": email, "password": password}
-                )
-                user = auth_response.user
-
-                if not user:
-                    st.error("Unable to sign in. Check your credentials.")
-                    return False
-
-                user_role = (user.app_metadata or {}).get("role")
-                if allowed_roles and user_role not in allowed_roles:
-                    supabase.auth.sign_out()
-                    logger.warning(f"Rejected login for {user.email}; missing required role")
-                    st.error("Your account is authenticated but not authorized for this app.")
-                    return False
-
-                st.session_state.auth_user = user
+        password = st.text_input("Password", type="password")
+        if st.button("Login"):
+            if password == expected_password:
                 st.session_state.authenticated = True
-                st.session_state.auth_session = {
-                    "access_token": auth_response.session.access_token,
-                    "refresh_token": auth_response.session.refresh_token,
-                }
-                logger.info(f"Successful login attempt for {user.email}")
                 st.rerun()
-            except Exception as e:
-                logger.warning(f"Failed login attempt: {e}")
-                st.error("Incorrect email/password or account unavailable.")
-
+            else:
+                st.error("Incorrect password")
         return False
-
-    # Authorization gate for role-based access (optional)
-    if allowed_roles:
-        user_role = (st.session_state.auth_user.app_metadata or {}).get("role")
-        if user_role not in allowed_roles:
-            st.error("You are authenticated but not authorized for this dashboard.")
-            return False
 
     return True
 
 
-
 @st.cache_resource
 def init_supabase():
-    """Initialize Supabase client."""
-    # Check env vars first (Railway)
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_KEY")
-
-    # Fall back to st.secrets only if env vars aren't set
-    if not supabase_url:
-        try:
-            supabase_url = st.secrets["SUPABASE_URL"]
-        except KeyError:
-            st.error("⚠️ Configuration Error: SUPABASE_URL not found in environment or secrets")
-            st.stop()
-        except Exception as e:
-            st.error(f"⚠️ Error reading SUPABASE_URL from secrets: {str(e)}")
-            st.stop()
-
-    if not supabase_key:
-        try:
-            supabase_key = st.secrets["SUPABASE_KEY"]
-        except KeyError:
-            st.error("⚠️ Configuration Error: SUPABASE_KEY not found in environment or secrets")
-            st.stop()
-        except Exception as e:
-            st.error(f"⚠️ Error reading SUPABASE_KEY from secrets: {str(e)}")
-            st.stop()
+    """Initialize read-only Supabase client (anon key)."""
+    supabase_url = os.getenv("SUPABASE_URL") or _get_secret("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY") or _get_secret("SUPABASE_KEY")
 
     if not supabase_url or not supabase_key:
-        st.error("Missing SUPABASE_URL or SUPABASE_KEY. Set them in Railway Variables.")
+        st.error("Missing SUPABASE_URL or SUPABASE_KEY.")
         st.stop()
 
-    logger.info(f"Initializing Supabase connection to {supabase_url[:30]}...")
     return create_client(supabase_url, supabase_key)
 
 
-def fetch_opportunities(
-    supabase,
-    source_filter="All",
-    min_score=0,
-    keyword_search="",
-    sort_field="score",
-    sort_desc=True,
-    range_start=0,
-    range_end=DEFAULT_PAGE_SIZE - 1,
-):
-    """Fetch opportunities from Supabase with server-side filtering, sorting, and pagination."""
-    try:
-        query = supabase.table("opportunities").select("*", count="exact")
+@st.cache_resource
+def init_supabase_service():
+    """Initialize service-role Supabase client for writes (status updates)."""
+    supabase_url = os.getenv("SUPABASE_URL") or _get_secret("SUPABASE_URL")
+    service_key = os.getenv("SUPABASE_SERVICE_KEY") or _get_secret("SUPABASE_SERVICE_KEY")
 
-        if source_filter == "Ask HN":
-            query = query.ilike("title", "Ask HN:%")
-        elif source_filter == "Show HN":
-            query = query.ilike("title", "Show HN:%")
+    if not supabase_url or not service_key:
+        return None  # Writes disabled — no service key configured
 
-        if min_score > 0:
-            query = query.gte("score", min_score)
-
-        if keyword_search:
-            escaped_search = keyword_search.replace('%', '\\%').replace(',', '\\,')
-            query = query.or_(
-                f"title.ilike.%{escaped_search}%,keywords::text.ilike.%{escaped_search}%"
-            )
-
-        query = query.order(sort_field, desc=sort_desc, nullsfirst=False)
-        query = query.range(range_start, range_end)
-
-        response = query.execute()
-        total_count = getattr(response, "count", 0) or 0
-        logger.info(
-            "Fetched %s opportunities from database (%s total matches)",
-            len(response.data),
-            total_count,
-        )
-        return response.data, total_count, None
-    except Exception as e:
-        logger.exception("Database query failed")
-        return [], 0, "We couldn't load opportunities right now. Please try again shortly."
+    return create_client(supabase_url, service_key)
 
 
-def render_opportunity(opp):
-    """Render a single opportunity card."""
-    st.markdown(build_opportunity_html(opp), unsafe_allow_html=True)
+# ---------------------------------------------------------------------------
+# Tab 1: Tweet Drafts
+# ---------------------------------------------------------------------------
 
+def render_tweet_drafts(supabase, service_client):
+    """Tweet Drafts tab — review, approve, skip generated tweets."""
+    st.markdown("### Tweet Drafts")
+    st.markdown("*AI-generated tweet drafts from scored signals. Update status to track your queue.*")
+
+    # Filters in sidebar
+    status_filter = st.sidebar.selectbox(
+        "Status", ["All", "draft", "posted", "skipped"], key="tweet_status"
+    )
+
+    # Fetch
+    query = supabase.table("tweet_drafts").select("*").order("generated_at", desc=True)
+    if status_filter != "All":
+        query = query.eq("status", status_filter)
+    response = query.limit(100).execute()
+    drafts = response.data
+
+    if not drafts:
+        st.info("No tweet drafts found." + (" Try changing the status filter." if status_filter != "All" else ""))
+        return
+
+    st.markdown(f"**{len(drafts)}** drafts")
+
+    for draft in drafts:
+        draft_id = draft["id"]
+        status = draft.get("status", "draft")
+        status_class = f"badge-{status}" if status in ("draft", "posted", "skipped") else "badge-draft"
+
+        source = draft.get("source", "")
+        source_class = {
+            "ask_hn": "source-ask", "show_hn": "source-show",
+            "producthunt": "source-ph", "github_trending": "source-gh"
+        }.get(source, "")
+        source_label = {
+            "ask_hn": "Ask HN", "show_hn": "Show HN",
+            "producthunt": "Product Hunt", "github_trending": "GitHub"
+        }.get(source, source)
+
+        title = draft.get("signal_title", "Untitled")
+        hook = draft.get("hook", "")
+        full_draft = draft.get("full_draft", "")
+        word_count = draft.get("word_count", 0)
+        relevance = draft.get("relevance_score")
+        potential = draft.get("content_potential")
+        date_str = (draft.get("generated_at") or "")[:10]
+
+        # Card header
+        scores_html = ""
+        if relevance is not None:
+            scores_html += f'<span class="score-badge">Rel {relevance}</span> '
+        if potential is not None:
+            scores_html += f'<span class="score-badge" style="background-color:#3B82F6;">Pot {potential}</span> '
+
+        st.markdown(f"""
+        <div class="card">
+            <div style="margin-bottom:6px;">
+                <span class="badge {status_class}">{status.upper()}</span>
+                <span class="source-tag {source_class}">{source_label}</span>
+                <span style="color:#666; margin-left:12px; font-size:13px;">{date_str}</span>
+                <span style="color:#666; margin-left:8px; font-size:13px;">{word_count}w</span>
+            </div>
+            <div style="margin-bottom:6px; font-weight:500; color:#FFF;">{title}</div>
+            {f'<div style="color:#22C55E; font-style:italic; margin-bottom:6px;">"{hook}"</div>' if hook else ''}
+            <div style="margin-bottom:8px;">{scores_html}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Expandable full draft + status buttons
+        with st.expander("View full draft", expanded=False):
+            st.text_area("Draft text", full_draft, height=200, key=f"text_{draft_id}", disabled=True)
+
+            if draft.get("signal_url"):
+                st.markdown(f"[View original signal]({draft['signal_url']})")
+
+            if service_client:
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if st.button("✅ Mark Posted", key=f"post_{draft_id}"):
+                        service_client.table("tweet_drafts").update({"status": "posted"}).eq("id", draft_id).execute()
+                        st.rerun()
+                with col2:
+                    if st.button("⏭️ Skip", key=f"skip_{draft_id}"):
+                        service_client.table("tweet_drafts").update({"status": "skipped"}).eq("id", draft_id).execute()
+                        st.rerun()
+                with col3:
+                    if st.button("↩️ Reset to Draft", key=f"reset_{draft_id}"):
+                        service_client.table("tweet_drafts").update({"status": "draft"}).eq("id", draft_id).execute()
+                        st.rerun()
+            else:
+                st.caption("Add SUPABASE_SERVICE_KEY to enable status updates.")
+
+
+# ---------------------------------------------------------------------------
+# Tab 2: Signals
+# ---------------------------------------------------------------------------
+
+def render_signals(supabase):
+    """Signals tab — scored opportunities from all sources."""
+    st.markdown("### Scored Signals")
+    st.markdown("*Opportunities scored by AI for relevance and content potential.*")
+
+    # Sidebar filters
+    min_relevance = st.sidebar.slider("Min Relevance Score", 0, 10, 5, key="sig_rel")
+    source_filter = st.sidebar.selectbox(
+        "Source", ["All", "ask_hn", "show_hn", "producthunt", "github_trending"], key="sig_source"
+    )
+    sort_choice = st.sidebar.selectbox(
+        "Sort by", ["Relevance (High)", "Content Potential (High)", "Newest"], key="sig_sort"
+    )
+
+    # Fetch scored signals
+    query = (
+        supabase.table("opportunities")
+        .select("*")
+        .not_.is_("relevance_score", "null")
+        .gte("relevance_score", min_relevance)
+    )
+    if source_filter != "All":
+        query = query.eq("source", source_filter)
+
+    sort_map = {
+        "Relevance (High)": ("relevance_score", True),
+        "Content Potential (High)": ("content_potential", True),
+        "Newest": ("created_at", True),
+    }
+    sort_field, sort_desc = sort_map[sort_choice]
+    query = query.order(sort_field, desc=sort_desc)
+
+    response = query.limit(100).execute()
+    signals = response.data
+
+    if not signals:
+        st.info("No scored signals found. Try lowering the relevance threshold.")
+        return
+
+    # Stats row
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Signals", len(signals))
+    with col2:
+        avg_rel = sum(s.get("relevance_score", 0) for s in signals) / len(signals)
+        st.metric("Avg Relevance", f"{avg_rel:.1f}")
+    with col3:
+        avg_pot = sum(s.get("content_potential", 0) for s in signals) / len(signals)
+        st.metric("Avg Potential", f"{avg_pot:.1f}")
+
+    st.markdown("---")
+
+    for sig in signals:
+        title = sig.get("title", "Untitled")
+        source = sig.get("source", "")
+        source_class = {
+            "ask_hn": "source-ask", "show_hn": "source-show",
+            "producthunt": "source-ph", "github_trending": "source-gh"
+        }.get(source, "")
+        source_label = {
+            "ask_hn": "Ask HN", "show_hn": "Show HN",
+            "producthunt": "Product Hunt", "github_trending": "GitHub"
+        }.get(source, source)
+
+        relevance = sig.get("relevance_score", 0)
+        potential = sig.get("content_potential", 0)
+        category = sig.get("category", "")
+        hook = sig.get("one_line_hook", "")
+        insight = sig.get("key_insight", "")
+        url = sig.get("url", "#")
+        score = sig.get("score", 0)
+        comments = sig.get("comments", 0)
+        date_str = (sig.get("created_at") or "")[:10]
+
+        st.markdown(f"""
+        <div class="card">
+            <div style="margin-bottom:6px;">
+                <a href="{url}" target="_blank" style="font-size:16px; font-weight:500; text-decoration:none;">{title}</a>
+                <span class="source-tag {source_class}">{source_label}</span>
+            </div>
+            <div style="margin-bottom:8px;">
+                <span class="score-badge">Rel {relevance}</span>
+                <span class="score-badge" style="background-color:#3B82F6;">Pot {potential}</span>
+                {f'<span class="badge badge-draft">{category}</span>' if category else ''}
+                <span style="color:#666; margin-left:12px; font-size:13px;">▲{score} 💬{comments} · {date_str}</span>
+            </div>
+            {f'<div style="color:#22C55E; font-style:italic; margin-bottom:4px;">"{hook}"</div>' if hook else ''}
+            {f'<div style="color:#AAA; font-size:14px;">{insight}</div>' if insight else ''}
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
+# Tab 3: Trends
+# ---------------------------------------------------------------------------
+
+def render_trends(supabase):
+    """Trends tab — Google Trends data for signal keywords."""
+    st.markdown("### Google Trends")
+    st.markdown("*YoY interest growth for keywords extracted from signals.*")
+
+    # Sidebar filters
+    rising_only = st.sidebar.checkbox("Rising trends only", value=False, key="trend_rising")
+
+    query = supabase.table("google_trends").select("*").order("yoy_growth_pct", desc=True)
+    if rising_only:
+        query = query.eq("is_rising", True)
+    response = query.limit(100).execute()
+    trends = response.data
+
+    if not trends:
+        st.info("No trends data yet. Run the pipeline to populate.")
+        return
+
+    # Stats
+    rising_count = sum(1 for t in trends if t.get("is_rising"))
+    avg_growth = sum(t.get("yoy_growth_pct") or 0 for t in trends) / len(trends)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Keywords Tracked", len(trends))
+    with col2:
+        st.metric("Rising", rising_count)
+    with col3:
+        st.metric("Avg YoY Growth", f"{avg_growth:+.0f}%")
+
+    st.markdown("---")
+
+    for trend in trends:
+        keyword = trend.get("keyword", "")
+        current = trend.get("current_interest")
+        year_ago = trend.get("year_ago_interest")
+        growth = trend.get("yoy_growth_pct")
+        is_rising = trend.get("is_rising", False)
+        fetched = (trend.get("fetched_at") or "")[:10]
+
+        growth_str = f"{growth:+.0f}%" if growth is not None else "N/A"
+        trend_class = "trend-rising" if is_rising else "trend-falling"
+
+        # Sparkline bar (simple CSS bar chart)
+        interest_raw = trend.get("interest_over_time") or []
+        interest_data = json.loads(interest_raw) if isinstance(interest_raw, str) else interest_raw
+        sparkline_html = ""
+        if interest_data:
+            max_val = max((p.get("value", 0) for p in interest_data), default=1) or 1
+            bars = ""
+            for point in interest_data[-12:]:  # last 12 data points
+                val = point.get("value", 0)
+                height = max(2, int(30 * val / max_val))
+                color = "#22C55E" if is_rising else "#666"
+                bars += f'<div style="display:inline-block;width:6px;height:{height}px;background:{color};margin-right:1px;vertical-align:bottom;"></div>'
+            sparkline_html = f'<div style="display:inline-block;margin-left:16px;height:30px;">{bars}</div>'
+
+        st.markdown(f"""
+        <div class="card">
+            <div style="display:flex; align-items:center; justify-content:space-between;">
+                <div>
+                    <span style="font-size:16px; font-weight:500; color:#FFF;">{keyword}</span>
+                    <span class="{trend_class}" style="margin-left:12px; font-size:15px;">{growth_str} YoY</span>
+                    {sparkline_html}
+                </div>
+                <div style="text-align:right; color:#666; font-size:13px;">
+                    Now: {current if current is not None else '?'} · Year ago: {year_ago if year_ago is not None else '?'} · {fetched}
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Expandable related queries
+        related_raw = trend.get("related_queries") or []
+        related = json.loads(related_raw) if isinstance(related_raw, str) else related_raw
+        if related:
+            with st.expander(f"Related queries ({len(related)})", expanded=False):
+                for rq in related[:10]:
+                    if isinstance(rq, dict):
+                        st.markdown(f"- **{rq.get('query', '')}** ({rq.get('value', '')})")
+                    else:
+                        st.markdown(f"- {rq}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     if not check_password():
         return
 
-    # Initialize Supabase
     supabase = init_supabase()
+    service_client = init_supabase_service()
 
-    # Header
     st.markdown("# 📡 Build Signals")
-    st.markdown("*Discover opportunities from Hacker News discussions*")
 
-    auth_user = st.session_state.get("auth_user")
-    if auth_user:
-        user_role = (auth_user.app_metadata or {}).get("role", "user")
-        st.caption(f"Signed in as **{auth_user.email}** ({user_role})")
+    tab1, tab2, tab3 = st.tabs(["🐦 Tweet Drafts", "📊 Signals", "📈 Trends"])
 
-    # Fetch data
-    with st.spinner("Loading opportunities..."):
-        opportunities, total_count = fetch_opportunities(supabase)
+    with tab1:
+        render_tweet_drafts(supabase, service_client)
 
-    if not opportunities:
-        st.warning("No opportunities found in the database.")
-        return
+    with tab2:
+        render_signals(supabase)
 
-    # Sidebar filters
-    st.sidebar.markdown("## Filters")
+    with tab3:
+        render_trends(supabase)
 
-    # Source type filter
-    source_options = ["All", "Ask HN", "Show HN"]
-    source_filter = st.sidebar.selectbox("Source Type", source_options)
-
-    # Minimum score filter
-    min_score = st.sidebar.number_input("Minimum Score", min_value=0, value=0, step=1)
-
-    # Keyword search
-    keyword_search = st.sidebar.text_input("Search Keywords", placeholder="e.g., API, automation")
-
-    # Sort options
-    st.sidebar.markdown("## Sort By")
-    sort_options = {
-        "Score (High to Low)": ("score", True),
-        "Score (Low to High)": ("score", False),
-        "Date (Newest)": ("created_at", True),
-        "Date (Oldest)": ("created_at", False),
-        "Comments (Most)": ("comments", True),
-        "Comments (Least)": ("comments", False),
-    }
-    sort_choice = st.sidebar.selectbox("Sort By", list(sort_options.keys()))
-    sort_field, sort_desc = sort_options[sort_choice]
-
-    # Pagination settings
-    st.sidebar.markdown("## Pagination")
-    page_size = st.sidebar.selectbox("Items per page", [25, 50, 100], index=1)
-
-    # Initial count request for pagination controls
-    with st.spinner("Loading opportunities..."):
-        _, total_count, query_error = fetch_opportunities(
-            supabase,
-            source_filter=source_filter,
-            min_score=min_score,
-            keyword_search=keyword_search,
-            sort_field=sort_field,
-            sort_desc=sort_desc,
-            range_start=0,
-            range_end=0,
-        )
-
-    if query_error:
-        st.error(query_error)
-        return
-
-    if total_count == 0:
-        st.info("No opportunities match your current filters. Try broadening your search.")
-        return
-
-    total_pages = max(1, (total_count + page_size - 1) // page_size)
-
-    # Page selector
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        page = st.number_input(
-            "Page", 
-            min_value=1, 
-            max_value=max(1, total_pages), 
-            value=1,
-            help=f"Total pages: {total_pages}"
-        )
-
-    # Fetch only current page
-    start_idx = (page - 1) * page_size
-    end_idx = start_idx + page_size
-    page_opportunities, _, query_error = fetch_opportunities(
-        supabase,
-        source_filter=source_filter,
-        min_score=min_score,
-        keyword_search=keyword_search,
-        sort_field=sort_field,
-        sort_desc=sort_desc,
-        range_start=start_idx,
-        range_end=end_idx - 1,
-    )
-
-    if query_error:
-        st.error(query_error)
-        return
-
-    # Stats from current page + global match count
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Opportunities", total_count)
-    with col2:
-        avg_score = sum(o.get("score", 0) for o in page_opportunities) / len(page_opportunities) if page_opportunities else 0
-        st.metric("Avg Score (Page)", f"{avg_score:.0f}")
-    with col3:
-        with_repos = len([o for o in page_opportunities if o.get("github_repos")])
-        st.metric("With GitHub Repos (Page)", with_repos)
-
-    st.markdown("---")
-
-    # Display paginated opportunities
-    if page_opportunities:
-        for opp in page_opportunities:
-            render_opportunity(opp)
-    else:
-        st.info("No opportunities match your filters.")
-
-    # Footer
+    # Sidebar footer
     st.sidebar.markdown("---")
-    if st.sidebar.button("Logout"):
-        try:
-            supabase.auth.sign_out()
-        except Exception as e:
-            logger.warning(f"Error while signing out: {e}")
-        st.session_state.authenticated = False
-        st.session_state.auth_user = None
-        st.session_state.auth_session = None
-        st.rerun()
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown(
-        f"*Showing {len(page_opportunities)} of {total_count} opportunities (Page {page}/{total_pages})*"
-    )
+    st.sidebar.markdown("*[Build Signals](https://buildsignals.co) — AI-powered signal pipeline*")
 
 
 if __name__ == "__main__":

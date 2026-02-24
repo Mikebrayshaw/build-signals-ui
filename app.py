@@ -3,11 +3,19 @@ import os
 import streamlit as st
 from supabase import create_client
 
+EMOJI_SIGNAL = "\U0001F4E1"
+EMOJI_BUILDING = "\U0001F3D7\uFE0F"
+EMOJI_UP = "\u25B2"
+EMOJI_COMMENTS = "\U0001F4AC"
+EMOJI_TRENDS = "\U0001F4C8"
+EMOJI_PRODUCTS = "\U0001F680"
+EMOJI_GITHUB = "\U0001F4BB"
+
 
 # Page config
 st.set_page_config(
     page_title="Build Signals",
-    page_icon="📡",
+    page_icon=EMOJI_SIGNAL,
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -93,6 +101,12 @@ st.markdown("""
     .trend-rising { color: #22C55E; font-weight: bold; }
     .trend-falling { color: #EF4444; }
 
+    .confidence-high { background-color: #1E3A2F; color: #22C55E; padding: 4px 8px; border-radius: 4px; font-weight: bold; display: inline-block; }
+    .confidence-medium { background-color: #3B3A1E; color: #EAB308; padding: 4px 8px; border-radius: 4px; font-weight: bold; display: inline-block; }
+    .confidence-low { background-color: #3B2020; color: #EF4444; padding: 4px 8px; border-radius: 4px; font-weight: bold; display: inline-block; }
+
+    .type-badge { background-color: #1A1A2E; color: #818CF8; padding: 3px 6px; border-radius: 4px; font-size: 12px; display: inline-block; margin-left: 6px; }
+
     /* Hide Streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
@@ -120,7 +134,7 @@ def check_password():
         st.stop()
 
     if not st.session_state.authenticated:
-        st.markdown("## 🏗️ Build Signals")
+        st.markdown(f"## {EMOJI_BUILDING} Build Signals")
         st.markdown("Enter password to access the dashboard.")
 
         password = st.text_input("Password", type="password")
@@ -155,7 +169,7 @@ def init_supabase_service():
     service_key = os.getenv("SUPABASE_SERVICE_KEY") or _get_secret("SUPABASE_SERVICE_KEY")
 
     if not supabase_url or not service_key:
-        return None  # Writes disabled — no service key configured
+        return None  # Writes disabled - no service key configured
 
     return create_client(supabase_url, service_key)
 
@@ -165,7 +179,7 @@ def init_supabase_service():
 # ---------------------------------------------------------------------------
 
 def render_tweet_drafts(supabase, service_client):
-    """Tweet Drafts tab — review, approve, skip generated tweets."""
+    """Tweet Drafts tab - review, approve, skip generated tweets."""
     st.markdown("### Tweet Drafts")
     st.markdown("*AI-generated tweet drafts from scored signals. Update status to track your queue.*")
 
@@ -241,15 +255,15 @@ def render_tweet_drafts(supabase, service_client):
             if service_client:
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    if st.button("✅ Mark Posted", key=f"post_{draft_id}"):
+                    if st.button("Mark Posted", key=f"post_{draft_id}"):
                         service_client.table("tweet_drafts").update({"status": "posted"}).eq("id", draft_id).execute()
                         st.rerun()
                 with col2:
-                    if st.button("⏭️ Skip", key=f"skip_{draft_id}"):
+                    if st.button("Skip", key=f"skip_{draft_id}"):
                         service_client.table("tweet_drafts").update({"status": "skipped"}).eq("id", draft_id).execute()
                         st.rerun()
                 with col3:
-                    if st.button("↩️ Reset to Draft", key=f"reset_{draft_id}"):
+                    if st.button("Reset to Draft", key=f"reset_{draft_id}"):
                         service_client.table("tweet_drafts").update({"status": "draft"}).eq("id", draft_id).execute()
                         st.rerun()
             else:
@@ -261,7 +275,7 @@ def render_tweet_drafts(supabase, service_client):
 # ---------------------------------------------------------------------------
 
 def render_signals(supabase):
-    """Signals tab — scored opportunities from all sources."""
+    """Signals tab - scored opportunities from all sources."""
     st.markdown("### Scored Signals")
     st.markdown("*Opportunities scored by AI for relevance and content potential.*")
 
@@ -344,7 +358,7 @@ def render_signals(supabase):
                 <span class="score-badge">Rel {relevance}</span>
                 <span class="score-badge" style="background-color:#3B82F6;">Pot {potential}</span>
                 {f'<span class="badge badge-draft">{category}</span>' if category else ''}
-                <span style="color:#666; margin-left:12px; font-size:13px;">▲{score} 💬{comments} · {date_str}</span>
+                <span style="color:#666; margin-left:12px; font-size:13px;">{EMOJI_UP}{score} {EMOJI_COMMENTS}{comments} | {date_str}</span>
             </div>
             {f'<div style="color:#22C55E; font-style:italic; margin-bottom:4px;">"{hook}"</div>' if hook else ''}
             {f'<div style="color:#AAA; font-size:14px;">{insight}</div>' if insight else ''}
@@ -357,7 +371,7 @@ def render_signals(supabase):
 # ---------------------------------------------------------------------------
 
 def render_trends(supabase):
-    """Trends tab — Google Trends data for signal keywords."""
+    """Trends tab - Google Trends data for signal keywords."""
     st.markdown("### Google Trends")
     st.markdown("*YoY interest growth for keywords extracted from signals.*")
 
@@ -421,7 +435,7 @@ def render_trends(supabase):
                     {sparkline_html}
                 </div>
                 <div style="text-align:right; color:#666; font-size:13px;">
-                    Now: {current if current is not None else '?'} · Year ago: {year_ago if year_ago is not None else '?'} · {fetched}
+                    Now: {current if current is not None else '?'} | Year ago: {year_ago if year_ago is not None else '?'} | {fetched}
                 </div>
             </div>
         </div>
@@ -440,6 +454,177 @@ def render_trends(supabase):
 
 
 # ---------------------------------------------------------------------------
+# Opportunity Intelligence
+# ---------------------------------------------------------------------------
+
+def render_opportunities(supabase):
+    """Single unified opportunity view."""
+    st.markdown("### Opportunity Intelligence")
+    st.markdown("*Each card synthesizes HN signals with Trends, Product Hunt, and GitHub evidence.*")
+
+    # Sidebar filters
+    confidence_filter = st.sidebar.selectbox(
+        "Confidence", ["All", "high", "medium", "low"], key="opp_confidence"
+    )
+    type_filter = st.sidebar.selectbox(
+        "Type",
+        ["All", "developer-tooling", "demographic-market-gap", "infrastructure-need",
+         "workflow-inefficiency", "emerging-category"],
+        key="opp_type"
+    )
+    sort_choice = st.sidebar.selectbox(
+        "Sort by",
+        ["Confidence (High)", "Sources Confirming", "Relevance (High)", "Newest"],
+        key="opp_sort"
+    )
+    limit_choice = st.sidebar.selectbox(
+        "Show", [5, 10, 20], index=1, key="opp_limit"
+    )
+
+    # Fetch
+    query = supabase.table("validated_opportunities").select("*")
+    if confidence_filter != "All":
+        query = query.eq("confidence", confidence_filter)
+
+    sort_map = {
+        "Confidence (High)": ("sources_confirming", True),
+        "Sources Confirming": ("sources_confirming", True),
+        "Relevance (High)": ("relevance_score", True),
+        "Newest": ("validated_at", True),
+    }
+    sort_field, sort_desc = sort_map[sort_choice]
+    query = query.order(sort_field, desc=sort_desc)
+
+    response = query.limit(100).execute()
+    opps = response.data
+    if type_filter != "All":
+        opps = [o for o in opps if type_filter in (o.get("opportunity_type", "") or "")]
+    opps = opps[:limit_choice]
+
+    if not opps:
+        st.info("No validated opportunities yet. Run the pipeline to populate.")
+        return
+
+    # Stats
+    high_count = sum(1 for o in opps if o.get("confidence") == "high")
+    med_count = sum(1 for o in opps if o.get("confidence") == "medium")
+    avg_sources = sum(o.get("sources_confirming", 0) for o in opps) / len(opps)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Opportunities", len(opps))
+    with col2:
+        st.metric("High Confidence", high_count)
+    with col3:
+        st.metric("Avg Sources", f"{avg_sources:.1f}")
+
+    st.markdown("---")
+
+    for opp in opps:
+        title = opp.get("signal_title", "Untitled")
+        confidence = opp.get("confidence", "low")
+        opp_type = opp.get("opportunity_type", "")
+        relevance = opp.get("relevance_score")
+        potential = opp.get("content_potential")
+        signal_score = opp.get("signal_score", 0)
+        signal_comments = opp.get("signal_comments", 0)
+        sources_conf = opp.get("sources_confirming", 0)
+        narrative = opp.get("narrative", "")
+        hook = opp.get("one_line_hook", "")
+        signal_url = opp.get("signal_url", "#")
+        date_str = (opp.get("validated_at") or "")[:10]
+
+        source = opp.get("signal_source", "")
+        source_class = {
+            "ask_hn": "source-ask", "show_hn": "source-show",
+            "producthunt": "source-ph", "github_trending": "source-gh"
+        }.get(source, "")
+        source_label = {
+            "ask_hn": "Ask HN", "show_hn": "Show HN",
+            "producthunt": "Product Hunt", "github_trending": "GitHub"
+        }.get(source, source)
+
+        scores_html = ""
+        if relevance is not None:
+            scores_html += f'<span class="score-badge">Rel {relevance}</span> '
+        if potential is not None:
+            scores_html += f'<span class="score-badge" style="background-color:#3B82F6;">Pot {potential}</span> '
+
+        types = []
+        if isinstance(opp_type, str):
+            for part in opp_type.replace(",", "/").split("/"):
+                p = part.strip()
+                if p:
+                    types.append(p)
+
+        gt_raw = opp.get("evidence_google_trends") or {}
+        gt_data = json.loads(gt_raw) if isinstance(gt_raw, str) else gt_raw
+        ph_raw = opp.get("evidence_producthunt") or {}
+        ph_data = json.loads(ph_raw) if isinstance(ph_raw, str) else ph_raw
+        gh_raw = opp.get("evidence_github") or {}
+        gh_data = json.loads(gh_raw) if isinstance(gh_raw, str) else gh_raw
+
+        trends_summary = gt_data.get("summary") or "No Google Trends data."
+        products_summary = ph_data.get("summary") or "No Product Hunt data."
+        github_summary = gh_data.get("summary") or "No GitHub data."
+
+        st.markdown(f"""
+        <div class="card">
+            <div style="margin-bottom:6px;">
+                <a href="{signal_url}" target="_blank" style="font-size:16px; font-weight:500; text-decoration:none;">{title}</a>
+                <span class="confidence-{confidence}">{confidence.upper()}</span>
+                {"".join([f'<span class="type-badge">{t}</span>' for t in types])}
+                <span class="source-tag {source_class}">{source_label}</span>
+            </div>
+            <div style="margin-bottom:8px;">
+                {scores_html}
+                <span style="color:#666; margin-left:12px; font-size:13px;">{sources_conf}/4 sources</span>
+                <span style="color:#666; margin-left:8px; font-size:13px;">{EMOJI_UP}{signal_score} {EMOJI_COMMENTS}{signal_comments} | {date_str}</span>
+            </div>
+            {f'<div style="color:#22C55E; font-style:italic; margin-bottom:6px;">"{hook}"</div>' if hook else ''}
+            {f'<div style="color:#CCC; font-size:14px; line-height:1.5; margin-bottom:8px;">{narrative}</div>' if narrative else ''}
+            <div style="color:#AAA; font-size:13px; margin-top:4px;">
+                {EMOJI_TRENDS} Trends: {trends_summary}<br/>
+                {EMOJI_PRODUCTS} Products: {products_summary}<br/>
+                {EMOJI_GITHUB} GitHub: {github_summary}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Evidence expanders
+        opp_id = opp.get("id", "")
+
+        # Google Trends evidence
+        gt_results = gt_data.get("results", [])
+        if gt_results:
+            with st.expander(f"Google Trends ({len(gt_results)} queries) [{opp_id[:8]}]", expanded=False):
+                for r in gt_results:
+                    interest = r.get("interest", 0)
+                    yoy = r.get("yoy_growth", 0)
+                    growth_color = "#22C55E" if yoy > 0 else "#EF4444"
+                    st.markdown(f"- **{r.get('query', '')}** - Interest: {interest}, YoY: <span style='color:{growth_color}'>{yoy:+.0f}%</span>", unsafe_allow_html=True)
+
+        # Product Hunt evidence
+        ph_results = ph_data.get("results", [])
+        if ph_results:
+            with st.expander(f"Product Hunt ({sum(len(r.get('products', [])) for r in ph_results)} products) [{opp_id[:8]}]", expanded=False):
+                for r in ph_results:
+                    for p in r.get("products", [])[:3]:
+                        votes = p.get("votes", 0)
+                        st.markdown(f"- **{p.get('name', '')}** ({votes} votes) - {p.get('tagline', '')}")
+
+        # GitHub evidence
+        gh_results = gh_data.get("results", [])
+        if gh_results:
+            with st.expander(f"GitHub ({sum(len(r.get('repos', [])) for r in gh_results)} repos) [{opp_id[:8]}]", expanded=False):
+                for r in gh_results:
+                    for repo in r.get("repos", [])[:3]:
+                        stars = repo.get("stars", 0)
+                        lang = repo.get("language", "")
+                        lang_str = f" [{lang}]" if lang else ""
+                        st.markdown(f"- **{repo.get('name', '')}**{lang_str} ({stars} stars) - {repo.get('description', '')}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -448,25 +633,16 @@ def main():
         return
 
     supabase = init_supabase()
-    service_client = init_supabase_service()
 
-    st.markdown("# 📡 Build Signals")
+    st.markdown(f"# {EMOJI_SIGNAL} Build Signals")
 
-    tab1, tab2, tab3 = st.tabs(["🐦 Tweet Drafts", "📊 Signals", "📈 Trends"])
-
-    with tab1:
-        render_tweet_drafts(supabase, service_client)
-
-    with tab2:
-        render_signals(supabase)
-
-    with tab3:
-        render_trends(supabase)
+    render_opportunities(supabase)
 
     # Sidebar footer
     st.sidebar.markdown("---")
-    st.sidebar.markdown("*[Build Signals](https://buildsignals.co) — AI-powered signal pipeline*")
+    st.sidebar.markdown("*[Build Signals](https://buildsignals.co) - AI-powered signal pipeline*")
 
 
 if __name__ == "__main__":
     main()
+
